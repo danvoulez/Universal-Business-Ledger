@@ -23,6 +23,9 @@ import { AntennaWebSocketServer } from './websocket';
 import type { WebSocketHandlers } from './websocket';
 import { createAnthropicAdapter } from '../sdk/anthropic';
 import { createOpenAIAdapter } from '../sdk/openai';
+import { createRedisRateLimiter } from '../core/operational/rate-limiter-redis';
+import type { RateLimiter } from '../core/operational/governance';
+import Redis from 'ioredis';
 
 // ============================================================================
 // CONFIGURATION
@@ -49,6 +52,12 @@ export interface AntennaConfig {
   
   /** Intent handler from core */
   intentHandler?: IntentHandler;
+  
+  /** Redis connection string for rate limiting */
+  redisUrl?: string;
+  
+  /** Master API key for delegation endpoint */
+  masterApiKey?: string;
 }
 
 export interface AntennaInstance {
@@ -83,6 +92,9 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
   let llmAdapter: LLMAdapter | undefined = adapters.llm;
   let agent: any = null;
   let agentRouter: AgentAPIRouter | null = null;
+  
+  // Rate limiter
+  let rateLimiter: RateLimiter | null = null;
   
   // HTTP server state
   let server: any = null;
@@ -126,6 +138,28 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
       
       // Create API router
       agentRouter = createAgentAPIRouter(agent);
+      
+      // Initialize rate limiter if Redis URL is provided
+      const redisUrl = config.redisUrl || process.env.REDIS_URL;
+      if (redisUrl) {
+        rateLimiter = createRedisRateLimiter({ redis: redisUrl });
+        
+        // Register default rate limits
+        rateLimiter.register({
+          id: 'intent-requests' as EntityId,
+          name: 'Intent Requests',
+          description: 'Rate limit for POST /intend requests',
+          scope: { type: 'Realm' },
+          limit: 100, // 100 requests per window
+          window: 60000, // 1 minute
+          action: { type: 'Reject', message: 'Rate limit exceeded. Please try again later.' },
+          enabled: true,
+        });
+        
+        console.log('✅ Rate limiter initialized with Redis');
+      } else {
+        console.log('⚠️  Rate limiter not initialized (REDIS_URL not set)');
+      }
       
       // For Node.js environments, use native http module
       // In production, you'd use Hono, Express, or similar
@@ -209,6 +243,33 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           
           // Intent endpoint (from core/api/http-server)
           else if ((path === '/' || path === '/intend') && req.method === 'POST') {
+            // Rate limiting check
+            if (rateLimiter) {
+              const realmId = body.realm || defaultRealmId;
+              const rateLimitCheck = await rateLimiter.check({ 
+                type: 'Realm', 
+                realmId: realmId as EntityId 
+              });
+              
+              if (!rateLimitCheck.allowed) {
+                res.writeHead(429, { 
+                  'Content-Type': 'application/json',
+                  'Retry-After': rateLimitCheck.retryAfter?.toString() || '60',
+                });
+                res.end(JSON.stringify({ 
+                  error: 'Rate limit exceeded',
+                  retryAfter: rateLimitCheck.retryAfter,
+                }));
+                return;
+              }
+              
+              // Record the request
+              await rateLimiter.record({ 
+                type: 'Realm', 
+                realmId: realmId as EntityId 
+              });
+            }
+            
             if (intentHandler) {
               const intent = {
                 intent: body.intent,
@@ -221,6 +282,36 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
             } else {
               result = { error: 'Intent handler not configured' };
             }
+          }
+          
+          // Delegation endpoint - Create realm-scoped API key
+          else if (path === '/auth/delegate' && req.method === 'POST') {
+            const masterKey = req.headers.authorization?.replace('Bearer ', '') || body.masterKey;
+            const expectedMasterKey = config.masterApiKey || process.env.UBL_MASTER_API_KEY;
+            
+            if (!expectedMasterKey || masterKey !== expectedMasterKey) {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Unauthorized - Invalid master key' }));
+              return;
+            }
+            
+            const realmId = body.realmId;
+            if (!realmId) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'realmId is required' }));
+              return;
+            }
+            
+            // Generate a realm-scoped API key (in production, use proper JWT or token generation)
+            const realmScopedKey = generateRealmScopedKey(realmId);
+            
+            result = {
+              token: realmScopedKey,
+              realmId,
+              expiresAt: Date.now() + (365 * 24 * 60 * 60 * 1000), // 1 year
+              scope: 'realm',
+              permissions: ['read', 'write'], // Limited to this realm only
+            };
           }
           
           // Affordances
@@ -375,6 +466,23 @@ async function parseBody(req: any): Promise<any> {
     });
     req.on('error', reject);
   });
+}
+
+/**
+ * Generate a realm-scoped API key.
+ * In production, this should be a proper JWT signed with a secret.
+ */
+function generateRealmScopedKey(realmId: EntityId): string {
+  // Simple implementation - in production, use JWT with proper signing
+  const payload = {
+    realmId,
+    type: 'realm-scoped',
+    iat: Math.floor(Date.now() / 1000),
+  };
+  
+  // Base64 encode (in production, use proper JWT signing)
+  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64');
+  return `ubl_sk_realm_${encoded}`;
 }
 
 // ============================================================================

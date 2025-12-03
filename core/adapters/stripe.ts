@@ -28,6 +28,7 @@ import type {
 } from './types';
 import type { Event } from '../schema/ledger';
 import type { EntityId, Timestamp } from '../shared/types';
+import Stripe from 'stripe';
 
 export interface StripeConfig extends AdapterConfig {
   credentials: {
@@ -44,7 +45,7 @@ export interface StripeConfig extends AdapterConfig {
  */
 export function createStripeAdapter(): PaymentAdapter {
   let config: StripeConfig;
-  let stripe: unknown; // Would be Stripe SDK instance
+  let stripe: Stripe | null = null;
   
   return {
     name: 'Stripe',
@@ -54,21 +55,42 @@ export function createStripeAdapter(): PaymentAdapter {
     
     async initialize(cfg: AdapterConfig): Promise<void> {
       config = cfg as StripeConfig;
-      // stripe = new Stripe(config.credentials.secretKey, {
-      //   apiVersion: config.options?.apiVersion ?? '2023-10-16',
-      // });
+      
+      if (!config.credentials.secretKey) {
+        throw new Error('Stripe secret key not provided');
+      }
+      
+      stripe = new Stripe(config.credentials.secretKey, {
+        apiVersion: (config.options?.apiVersion as Stripe.LatestApiVersion) ?? '2025-11-17.clover',
+      });
+      
       console.log('Stripe adapter initialized');
     },
     
     async healthCheck(): Promise<AdapterHealth> {
       try {
-        // const balance = await stripe.balance.retrieve();
-        return { healthy: true, latencyMs: 50, message: 'Stripe connected' };
-      } catch (error) {
+        if (!stripe) {
+          return { 
+            healthy: false, 
+            latencyMs: 0, 
+            message: 'Stripe not initialized' 
+          };
+        }
+        
+        const startTime = Date.now();
+        await stripe.balance.retrieve();
+        const latencyMs = Date.now() - startTime;
+        
+        return { 
+          healthy: true, 
+          latencyMs, 
+          message: 'Stripe connected' 
+        };
+      } catch (error: any) {
         return { 
           healthy: false, 
           latencyMs: 0, 
-          message: `Stripe error: ${error}` 
+          message: `Stripe error: ${error.message || error}` 
         };
       }
     },
@@ -78,87 +100,126 @@ export function createStripeAdapter(): PaymentAdapter {
     },
     
     async createPaymentIntent(request: PaymentIntentRequest): Promise<PaymentIntent> {
-      // const intent = await stripe.paymentIntents.create({
-      //   amount: request.amount,
-      //   currency: request.currency,
-      //   customer: request.customerId,
-      //   metadata: {
-      //     ...request.metadata,
-      //     agreementId: request.agreementId,
-      //   },
-      // });
+      if (!stripe) {
+        throw new Error('Stripe not initialized');
+      }
       
-      // Mock response
-      return {
-        id: `pi_${Date.now()}`,
-        clientSecret: `pi_${Date.now()}_secret_xxx`,
-        status: 'pending',
+      const intent = await stripe.paymentIntents.create({
         amount: request.amount,
         currency: request.currency,
+        customer: request.customerId,
+        metadata: {
+          ...request.metadata,
+          agreementId: request.agreementId || '',
+        },
+      });
+      
+      return {
+        id: intent.id,
+        clientSecret: intent.client_secret || '',
+        status: intent.status,
+        amount: intent.amount,
+        currency: intent.currency,
       };
     },
     
     async confirmPayment(paymentIntentId: string): Promise<PaymentResult> {
-      // const intent = await stripe.paymentIntents.confirm(paymentIntentId);
-      // const charge = intent.latest_charge;
+      if (!stripe) {
+        throw new Error('Stripe not initialized');
+      }
       
-      // Mock response
+      const intent = await stripe.paymentIntents.retrieve(paymentIntentId);
+      
+      if (intent.status !== 'succeeded') {
+        throw new Error(`Payment not succeeded. Status: ${intent.status}`);
+      }
+      
+      const charge = intent.latest_charge;
+      let fee = 0;
+      let net = intent.amount;
+      
+      if (charge && typeof charge === 'string') {
+        const chargeDetails = await stripe.charges.retrieve(charge);
+        fee = chargeDetails.balance_transaction 
+          ? (await stripe.balanceTransactions.retrieve(chargeDetails.balance_transaction as string)).fee 
+          : 0;
+        net = intent.amount - fee;
+      }
+      
       return {
         id: paymentIntentId,
-        status: 'succeeded',
-        amount: 10000,
-        fee: 320, // Stripe fee
-        net: 9680,
-        metadata: {},
+        status: intent.status === 'succeeded' ? 'succeeded' : intent.status === 'processing' ? 'processing' : intent.status === 'failed' ? 'failed' : 'pending',
+        amount: intent.amount,
+        fee,
+        net,
+        metadata: intent.metadata,
       };
     },
     
     async refund(paymentId: string, amount?: number): Promise<RefundResult> {
-      // const refund = await stripe.refunds.create({
-      //   payment_intent: paymentId,
-      //   amount,
-      // });
+      if (!stripe) {
+        throw new Error('Stripe not initialized');
+      }
+      
+      const refund = await stripe.refunds.create({
+        payment_intent: paymentId,
+        amount,
+      });
       
       return {
-        id: `re_${Date.now()}`,
-        status: 'succeeded',
-        amount: amount ?? 0,
+        id: refund.id,
+        status: refund.status === 'succeeded' ? 'succeeded' : refund.status === 'failed' ? 'failed' : 'pending',
+        amount: refund.amount,
       };
     },
     
     async createSubscription(request: SubscriptionRequest): Promise<SubscriptionResult> {
-      // const subscription = await stripe.subscriptions.create({
-      //   customer: request.customerId,
-      //   items: [{ price: request.priceId }],
-      //   metadata: {
-      //     ...request.metadata,
-      //     agreementId: request.agreementId,
-      //   },
-      // });
+      if (!stripe) {
+        throw new Error('Stripe not initialized');
+      }
       
-      const now = Date.now();
+      const subscription = await stripe.subscriptions.create({
+        customer: request.customerId,
+        items: [{ price: request.priceId }],
+        metadata: {
+          ...request.metadata,
+          agreementId: request.agreementId || '',
+        },
+      });
+      
+      const subData = await stripe.subscriptions.retrieve(subscription.id);
+      
       return {
-        id: `sub_${now}`,
-        status: 'active',
-        currentPeriodStart: now,
-        currentPeriodEnd: now + 30 * 24 * 60 * 60 * 1000, // +30 days
+        id: subscription.id,
+        status: subData.status === 'active' ? 'active' : subData.status === 'canceled' ? 'canceled' : 'past_due',
+        currentPeriodStart: subData.current_period_start * 1000,
+        currentPeriodEnd: subData.current_period_end * 1000,
       };
     },
     
     async cancelSubscription(subscriptionId: string): Promise<void> {
-      // await stripe.subscriptions.cancel(subscriptionId);
+      if (!stripe) {
+        throw new Error('Stripe not initialized');
+      }
+      
+      await stripe.subscriptions.cancel(subscriptionId);
       console.log(`Subscription ${subscriptionId} cancelled`);
     },
     
     async handleWebhook(payload: unknown, signature: string): Promise<PaymentEvent> {
-      // const event = stripe.webhooks.constructEvent(
-      //   payload,
-      //   signature,
-      //   config.credentials.webhookSecret
-      // );
+      if (!stripe) {
+        throw new Error('Stripe not initialized');
+      }
       
-      // Mock event parsing
-      const event = payload as { type: string; data: { object: unknown } };
+      if (!config.credentials.webhookSecret) {
+        throw new Error('Stripe webhook secret not configured');
+      }
+      
+      const event = stripe.webhooks.constructEvent(
+        payload as string | Buffer,
+        signature,
+        config.credentials.webhookSecret
+      );
       
       return {
         type: event.type,

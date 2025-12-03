@@ -27,6 +27,8 @@ import type {
   AdapterHealth,
 } from '../types';
 import type { EntityId } from '../../shared/types';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand, ListObjectsV2Command, HeadBucketCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 // ============================================================================
 // S3-COMPATIBLE CONFIGURATION
@@ -150,8 +152,7 @@ export function createS3CompatibleAdapter(
   providerName = 'S3Compatible'
 ): StorageAdapter {
   let config: S3CompatibleConfig;
-  // In real implementation, would use AWS SDK or compatible client
-  // let s3Client: S3Client;
+  let s3Client: S3Client | null = null;
   
   return {
     name: providerName,
@@ -162,132 +163,199 @@ export function createS3CompatibleAdapter(
     async initialize(cfg: AdapterConfig): Promise<void> {
       config = cfg as S3CompatibleConfig;
       
+      if (!config.credentials.accessKeyId || !config.credentials.secretAccessKey) {
+        throw new Error('S3 credentials not provided');
+      }
+      
       // Initialize S3 client
-      // s3Client = new S3Client({
-      //   credentials: {
-      //     accessKeyId: config.credentials.accessKeyId,
-      //     secretAccessKey: config.credentials.secretAccessKey,
-      //     sessionToken: config.credentials.sessionToken,
-      //   },
-      //   region: config.options.region ?? 'us-east-1',
-      //   endpoint: config.options.endpoint,
-      //   forcePathStyle: config.options.forcePathStyle,
-      // });
+      s3Client = new S3Client({
+        credentials: {
+          accessKeyId: config.credentials.accessKeyId,
+          secretAccessKey: config.credentials.secretAccessKey,
+          sessionToken: config.credentials.sessionToken,
+        },
+        region: config.options.region ?? 'us-east-1',
+        endpoint: config.options.endpoint,
+        forcePathStyle: config.options.forcePathStyle,
+      });
       
       console.log(`S3-compatible adapter initialized for bucket: ${config.options.bucket}`);
     },
     
     async healthCheck(): Promise<AdapterHealth> {
       try {
-        // Try to head the bucket
-        // await s3Client.send(new HeadBucketCommand({ Bucket: config.options.bucket }));
+        if (!s3Client) {
+          return {
+            healthy: false,
+            latencyMs: 0,
+            message: 'S3 client not initialized',
+          };
+        }
+        
+        const startTime = Date.now();
+        await s3Client.send(new HeadBucketCommand({ Bucket: config.options.bucket }));
+        const latencyMs = Date.now() - startTime;
         
         return {
           healthy: true,
-          latencyMs: 50,
-          message: `Connected to bucket: ${config?.options?.bucket}`,
+          latencyMs,
+          message: `Connected to bucket: ${config.options.bucket}`,
           details: {
-            bucket: config?.options?.bucket,
-            endpoint: config?.options?.endpoint ?? 'AWS S3',
+            bucket: config.options.bucket,
+            endpoint: config.options.endpoint ?? 'AWS S3',
           },
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           healthy: false,
           latencyMs: 0,
-          message: `S3 error: ${error}`,
+          message: `S3 error: ${error.message || error}`,
         };
       }
     },
     
     async shutdown(): Promise<void> {
-      // s3Client.destroy();
+      if (s3Client) {
+        s3Client.destroy();
+        s3Client = null;
+      }
       console.log('S3-compatible adapter shutdown');
     },
     
     async upload(request: UploadRequest): Promise<UploadResult> {
+      if (!s3Client) {
+        throw new Error('S3 client not initialized');
+      }
+      
       const { key, content, contentType, metadata } = request;
       
-      // const command = new PutObjectCommand({
-      //   Bucket: config.options.bucket,
-      //   Key: key,
-      //   Body: content,
-      //   ContentType: contentType,
-      //   Metadata: metadata,
-      //   ACL: config.options.defaultAcl,
-      //   ServerSideEncryption: config.options.serverSideEncryption,
-      //   SSEKMSKeyId: config.options.kmsKeyId,
-      // });
-      // const result = await s3Client.send(command);
+      // Convert content to Buffer if needed
+      let body: Buffer | Uint8Array;
+      if (content instanceof Uint8Array) {
+        body = Buffer.from(content);
+      } else if (typeof content === 'string') {
+        body = Buffer.from(content, 'utf-8');
+      } else {
+        body = content;
+      }
       
-      // Mock result
-      const size = content instanceof Uint8Array ? content.length : 0;
+      const command = new PutObjectCommand({
+        Bucket: config.options.bucket,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        Metadata: metadata,
+        ACL: config.options.defaultAcl,
+        ServerSideEncryption: config.options.serverSideEncryption,
+        SSEKMSKeyId: config.options.kmsKeyId,
+      });
+      
+      const result = await s3Client.send(command);
+      const size = body.length;
       
       return {
         key,
         url: buildObjectUrl(config, key),
         size,
-        etag: `"${generateMockEtag()}"`,
+        etag: result.ETag || `"${generateMockEtag()}"`,
       };
     },
     
     async download(key: string): Promise<DownloadResult> {
-      // const command = new GetObjectCommand({
-      //   Bucket: config.options.bucket,
-      //   Key: key,
-      // });
-      // const result = await s3Client.send(command);
-      // const content = await result.Body?.transformToByteArray();
+      if (!s3Client) {
+        throw new Error('S3 client not initialized');
+      }
       
-      // Mock result
+      const command = new GetObjectCommand({
+        Bucket: config.options.bucket,
+        Key: key,
+      });
+      
+      const result = await s3Client.send(command);
+      
+      // Convert stream to Uint8Array
+      const chunks: Uint8Array[] = [];
+      if (result.Body) {
+        for await (const chunk of result.Body as any) {
+          chunks.push(chunk);
+        }
+      }
+      
+      const content = new Uint8Array(
+        chunks.reduce((acc, chunk) => acc + chunk.length, 0)
+      );
+      let offset = 0;
+      for (const chunk of chunks) {
+        content.set(chunk, offset);
+        offset += chunk.length;
+      }
+      
       return {
-        content: new Uint8Array(0),
-        contentType: 'application/octet-stream',
-        size: 0,
-        metadata: {},
+        content,
+        contentType: result.ContentType || 'application/octet-stream',
+        size: content.length,
+        metadata: result.Metadata || {},
       };
     },
     
     async getSignedUrl(key: string, expiresIn = 3600): Promise<string> {
-      // const command = new GetObjectCommand({
-      //   Bucket: config.options.bucket,
-      //   Key: key,
-      // });
-      // return await getSignedUrl(s3Client, command, { expiresIn });
+      if (!s3Client) {
+        throw new Error('S3 client not initialized');
+      }
       
-      // Mock signed URL
-      const baseUrl = buildObjectUrl(config, key);
-      return `${baseUrl}?X-Amz-Expires=${expiresIn}&X-Amz-Signature=mock`;
+      const command = new GetObjectCommand({
+        Bucket: config.options.bucket,
+        Key: key,
+      });
+      
+      return await getSignedUrl(s3Client, command, { expiresIn });
     },
     
     async delete(key: string): Promise<void> {
-      // const command = new DeleteObjectCommand({
-      //   Bucket: config.options.bucket,
-      //   Key: key,
-      // });
-      // await s3Client.send(command);
+      if (!s3Client) {
+        throw new Error('S3 client not initialized');
+      }
       
+      const command = new DeleteObjectCommand({
+        Bucket: config.options.bucket,
+        Key: key,
+      });
+      
+      await s3Client.send(command);
       console.log(`Deleted: ${key}`);
     },
     
     async list(prefix?: string): Promise<readonly StorageObject[]> {
-      // const command = new ListObjectsV2Command({
-      //   Bucket: config.options.bucket,
-      //   Prefix: prefix,
-      // });
-      // const result = await s3Client.send(command);
+      if (!s3Client) {
+        throw new Error('S3 client not initialized');
+      }
       
-      // Mock result
-      return [];
+      const command = new ListObjectsV2Command({
+        Bucket: config.options.bucket,
+        Prefix: prefix,
+      });
+      
+      const result = await s3Client.send(command);
+      
+      return (result.Contents || []).map(obj => ({
+        key: obj.Key || '',
+        size: obj.Size || 0,
+        lastModified: obj.LastModified?.getTime() || Date.now(),
+        etag: obj.ETag || '',
+      }));
     },
     
     async exists(key: string): Promise<boolean> {
+      if (!s3Client) {
+        return false;
+      }
+      
       try {
-        // const command = new HeadObjectCommand({
-        //   Bucket: config.options.bucket,
-        //   Key: key,
-        // });
-        // await s3Client.send(command);
+        const command = new HeadObjectCommand({
+          Bucket: config.options.bucket,
+          Key: key,
+        });
+        await s3Client.send(command);
         return true;
       } catch {
         return false;

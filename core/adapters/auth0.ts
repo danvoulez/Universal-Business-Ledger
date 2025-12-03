@@ -26,6 +26,8 @@ import type {
 } from './types';
 import type { Event } from '../schema/ledger';
 import type { EntityId, Timestamp } from '../shared/types';
+import jwt from 'jsonwebtoken';
+import jwksClient, { JwksClient } from 'jwks-rsa';
 
 export interface Auth0Config extends AdapterConfig {
   credentials: {
@@ -44,6 +46,7 @@ export interface Auth0Config extends AdapterConfig {
  */
 export function createAuth0Adapter(): IdentityAdapter {
   let config: Auth0Config;
+  let jwks: JwksClient | null = null;
   
   return {
     name: 'Auth0',
@@ -53,6 +56,16 @@ export function createAuth0Adapter(): IdentityAdapter {
     
     async initialize(cfg: AdapterConfig): Promise<void> {
       config = cfg as Auth0Config;
+      
+      // Initialize JWKS client for token verification
+      if (config.credentials.domain) {
+        jwks = jwksClient({
+          jwksUri: `https://${config.credentials.domain}/.well-known/jwks.json`,
+          cache: true,
+          cacheMaxAge: 86400000, // 24 hours
+        });
+      }
+      
       console.log('Auth0 adapter initialized for domain:', config.credentials.domain);
     },
     
@@ -81,38 +94,66 @@ export function createAuth0Adapter(): IdentityAdapter {
     
     async verifyToken(token: string): Promise<IdentityVerification> {
       try {
-        // Verify JWT with Auth0
-        // const decoded = await verifyJwt(token, {
-        //   issuer: `https://${config.credentials.domain}/`,
-        //   audience: config.credentials.audience,
-        // });
-        
-        // Mock verification
-        const decoded = mockDecodeToken(token);
-        
-        if (!decoded) {
-          return { valid: false };
+        // Real JWT verification with Auth0
+        if (!config.credentials.domain) {
+          throw new Error('Auth0 domain not configured');
         }
+
+        // Get signing key from JWKS
+        const getKey = (header: jwt.JwtHeader, callback: jwt.SigningKeyCallback) => {
+          if (!jwks) {
+            return callback(new Error('JWKS client not initialized'));
+          }
+          
+          jwks.getSigningKey(header.kid, (err, key) => {
+            if (err) {
+              return callback(err);
+            }
+            const signingKey = key?.getPublicKey();
+            callback(null, signingKey);
+          });
+        };
+
+        // Verify token
+        const decoded = await new Promise<jwt.JwtPayload>((resolve, reject) => {
+          jwt.verify(
+            token,
+            getKey,
+            {
+              audience: config.credentials.audience,
+              issuer: `https://${config.credentials.domain}/`,
+              algorithms: ['RS256'],
+            },
+            (err, decoded) => {
+              if (err) {
+                reject(err);
+              } else {
+                resolve(decoded as jwt.JwtPayload);
+              }
+            }
+          );
+        });
         
         // Map Auth0 user to Entity
-        const entityId = auth0UserIdToEntityId(decoded.sub);
+        const entityId = auth0UserIdToEntityId(decoded.sub || '');
         
         return {
           valid: true,
-          userId: decoded.sub,
+          userId: decoded.sub || '',
           entityId,
-          email: decoded.email,
-          roles: decoded['https://ledger/roles'] ?? [],
-          expiresAt: decoded.exp * 1000,
+          email: decoded.email as string || '',
+          roles: (decoded['https://ledger/roles'] as string[]) ?? [],
+          expiresAt: (decoded.exp || 0) * 1000,
           
           // The login itself is a "Session Agreement"
           sessionAgreement: {
-            issuedAt: decoded.iat * 1000,
-            expiresAt: decoded.exp * 1000,
-            scopes: decoded.scope?.split(' ') ?? [],
+            issuedAt: (decoded.iat || 0) * 1000,
+            expiresAt: (decoded.exp || 0) * 1000,
+            scopes: (decoded.scope as string)?.split(' ') ?? [],
           },
         };
       } catch (error) {
+        console.error('Auth0 token verification failed:', error);
         return { valid: false };
       }
     },
@@ -243,21 +284,7 @@ function generateState(): string {
   return Math.random().toString(36).substring(2, 15);
 }
 
-/**
- * Mock token decoder for development.
- */
-function mockDecodeToken(token: string): any {
-  if (token === 'invalid') return null;
-  
-  return {
-    sub: 'auth0|123456',
-    email: 'user@example.com',
-    iat: Math.floor(Date.now() / 1000) - 3600,
-    exp: Math.floor(Date.now() / 1000) + 3600,
-    scope: 'openid profile email',
-    'https://ledger/roles': ['User'],
-  };
-}
+// Mock token decoder removed - using real JWT verification now
 
 // ============================================================================
 // AUTH0 → LEDGER EVENT TRANSFORMERS
