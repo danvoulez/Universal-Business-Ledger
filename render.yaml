@@ -1,0 +1,63 @@
+services:
+  # Antenna Web Service - HTTP API
+  - type: web
+    name: antenna
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ledger-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+  # Background Worker - Long-running jobs
+  - type: worker
+    name: workspace-worker
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run worker
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ledger-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: ledger-redis
+          type: redis
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+
+databases:
+  # PostgreSQL Event Store
+  - name: ledger-db
+    plan: starter
+    databaseName: ledger
+    user: ledger_user
+
+services:
+  # Redis - Job queue and caching
+  - type: redis
+    name: ledger-redis
+    plan: starter
+
