@@ -168,18 +168,31 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
       const http = await import('node:http');
       
       server = http.createServer(async (req, res) => {
-        // CORS headers
+        // CORS headers - sempre retornar
         const origin = req.headers.origin || '';
-        if (corsOrigins.includes(origin) || corsOrigins.includes('*')) {
-          res.setHeader('Access-Control-Allow-Origin', origin);
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        const isProduction = process.env.NODE_ENV === 'production';
+        const allowAllOrigins = corsOrigins.includes('*') || !isProduction;
+        const originAllowed = allowAllOrigins || corsOrigins.includes(origin);
+        
+        // Sempre retornar headers CORS (browsers precisam mesmo se negado)
+        if (originAllowed) {
+          // Permitir origem específica ou todas em dev/staging
+          res.setHeader('Access-Control-Allow-Origin', allowAllOrigins ? (origin || '*') : origin);
           res.setHeader('Access-Control-Allow-Credentials', 'true');
+        } else if (origin) {
+          // Em produção, se origem não permitida, não retornar Allow-Origin
+          // Mas ainda retornar outros headers para debugging
         }
         
-        // Handle preflight
+        // Headers CORS sempre retornados
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, DELETE, PATCH');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Idempotency-Key, X-Request-ID, X-API-Key');
+        res.setHeader('Access-Control-Expose-Headers', 'X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, X-Request-ID');
+        res.setHeader('Access-Control-Max-Age', '86400'); // 24 horas para preflight cache
+        
+        // Handle preflight OPTIONS request
         if (req.method === 'OPTIONS') {
-          res.writeHead(204);
+          res.writeHead(originAllowed ? 204 : 403);
           res.end();
           return;
         }

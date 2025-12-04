@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test CORS - UBL</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    button { padding: 10px; margin: 5px; cursor: pointer; }
+    pre { background: #f5f5f5; padding: 10px; overflow-x: auto; }
+    .success { color: green; }
+    .error { color: red; }
+  </style>
+</head>
+<body>
+  <h1>🧪 Test CORS - Universal Business Ledger</h1>
+  
+  <div>
+    <label>URL Base:</label>
+    <input type="text" id="baseUrl" value="http://localhost:3000" style="width: 300px;">
+  </div>
+  
+  <div style="margin-top: 20px;">
+    <button onclick="testPreflight()">Test OPTIONS (Preflight)</button>
+    <button onclick="testPost()">Test POST /intent</button>
+    <button onclick="testHealth()">Test GET /health</button>
+  </div>
+  
+  <div id="result" style="margin-top: 20px;"></div>
+  
+  <script>
+    const baseUrl = () => document.getElementById('baseUrl').value;
+    
+    function log(message, isError = false) {
+      const result = document.getElementById('result');
+      const className = isError ? 'error' : 'success';
+      result.innerHTML += `<pre class="${className}">${message}</pre>`;
+    }
+    
+    function clearLog() {
+      document.getElementById('result').innerHTML = '';
+    }
+    
+    async function testPreflight() {
+      clearLog();
+      log('Testing OPTIONS (preflight)...');
+      
+      try {
+        const response = await fetch(`${baseUrl()}/intent`, {
+          method: 'OPTIONS',
+          headers: {
+            'Origin': window.location.origin,
+            'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'Content-Type, Authorization'
+          }
+        });
+        
+        log(`Status: ${response.status}`);
+        log(`Headers:`);
+        response.headers.forEach((value, key) => {
+          if (key.toLowerCase().startsWith('access-control')) {
+            log(`  ${key}: ${value}`);
+          }
+        });
+        
+        if (response.status === 204 || response.status === 200) {
+          log('✅ Preflight successful!');
+        } else {
+          log(`❌ Preflight failed: ${response.status}`, true);
+        }
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, true);
+      }
+    }
+    
+    async function testPost() {
+      clearLog();
+      log('Testing POST /intent...');
+      
+      try {
+        const response = await fetch(`${baseUrl()}/intent`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Origin': window.location.origin
+          },
+          body: JSON.stringify({
+            intent: 'query',
+            payload: {
+              queryType: 'Realm'
+            }
+          })
+        });
+        
+        log(`Status: ${response.status}`);
+        log(`CORS Headers:`);
+        response.headers.forEach((value, key) => {
+          if (key.toLowerCase().startsWith('access-control')) {
+            log(`  ${key}: ${value}`);
+          }
+        });
+        
+        const data = await response.json();
+        log(`Response:`);
+        log(JSON.stringify(data, null, 2));
+        
+        if (response.ok) {
+          log('✅ POST successful!');
+        } else {
+          log(`❌ POST failed: ${response.status}`, true);
+        }
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, true);
+        log('💡 Se for CORS error, verifique se o servidor está rodando e CORS está habilitado', true);
+      }
+    }
+    
+    async function testHealth() {
+      clearLog();
+      log('Testing GET /health...');
+      
+      try {
+        const response = await fetch(`${baseUrl()}/health`, {
+          method: 'GET',
+          headers: {
+            'Origin': window.location.origin
+          }
+        });
+        
+        log(`Status: ${response.status}`);
+        log(`CORS Headers:`);
+        response.headers.forEach((value, key) => {
+          if (key.toLowerCase().startsWith('access-control')) {
+            log(`  ${key}: ${value}`);
+          }
+        });
+        
+        const data = await response.json();
+        log(`Response:`);
+        log(JSON.stringify(data, null, 2));
+        
+        if (response.ok) {
+          log('✅ Health check successful!');
+        } else {
+          log(`❌ Health check failed: ${response.status}`, true);
+        }
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, true);
+      }
+    }
+  </script>
+</body>
+</html>
+
