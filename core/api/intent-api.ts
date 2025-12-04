@@ -9,9 +9,9 @@
  *   PUT /orders/:id/status
  * 
  * We have:
- *   POST /intend { intent: "employ", ... }
- *   POST /intend { intent: "sell", ... }
- *   POST /intend { intent: "transition", ... }
+ *   POST /intent { intent: "employ", ... }
+ *   POST /intent { intent: "sell", ... }
+ *   POST /intent { intent: "transition", ... }
  * 
  * The system understands what you want to achieve and routes
  * to the appropriate agreement type, workflow, and validation.

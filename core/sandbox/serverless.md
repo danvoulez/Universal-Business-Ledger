@@ -49,7 +49,7 @@
 ├─────────────────────────────────────────────────────────────┤
 │                                                               │
 │  API Functions (Vercel/Netlify/Lambda)                      │
-│  ├── POST /intend          → Fast (< 1s)                     │
+│  ├── POST /intent          → Fast (< 1s)                     │
 │  ├── GET  /query           → Fast (< 1s)                     │
 │  ├── POST /upload:file     → Fast (< 5s)                     │
 │  └── POST /clone:repo     → Queue job (async)              │
@@ -280,7 +280,7 @@ supabase
 ## Implementation Example
 
 ```typescript
-// serverless/api/intend.ts (Vercel function)
+// serverless/api/intent.ts (Vercel function)
 export default async function handler(req, res) {
   const { intent, payload } = req.body;
   

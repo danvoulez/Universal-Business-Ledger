@@ -257,7 +257,7 @@ Instead of REST endpoints, express what you want to achieve:
 POST /employees { ... }
 
 // Intent-driven
-POST /intend { intent: "hire", payload: { ... } }
+POST /intent { intent: "hire", payload: { ... } }
 ```
 
 ### 3. Affordances

@@ -46,7 +46,7 @@ The Universal Business Ledger API is **intent-driven**.
 Instead of traditional REST endpoints like \`POST /employees\`, you express **what you want to achieve**:
 
 \`\`\`json
-POST /intend
+POST /intent
 {
   "intent": "hire",
   "payload": { "employeeId": "...", "terms": {...} }
@@ -83,7 +83,7 @@ This makes the API self-documenting and discoverable.
     
     paths: {
       // Intent API
-      '/intend': {
+      '/intent': {
         post: {
           operationId: 'executeIntent',
           tags: ['Intent'],
@@ -154,7 +154,7 @@ This makes the API self-documenting and discoverable.
         },
       },
       
-      '/intend/{intent}': {
+      '/intent/{intent}': {
         get: {
           operationId: 'describeIntent',
           tags: ['Intent'],

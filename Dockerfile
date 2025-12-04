@@ -1,22 +1,32 @@
-FROM node:18-alpine
+FROM node:18-alpine AS builder
 
 WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm ci --only=production
-
-# Copy source code
+# Copy source
 COPY . .
 
-# Build the project
+# Build
 RUN npm run build
 
-# Expose port
-EXPOSE 10000
+# Production image
+FROM node:18-alpine
 
-# Start the application
-CMD ["npm", "start"]
+WORKDIR /app
 
+# Copy built files
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/package*.json ./
+
+# Install production dependencies only
+RUN npm ci --production
+
+EXPOSE 3000
+
+ENV NODE_ENV=production
+ENV PORT=3000
+
+CMD ["node", "dist/antenna/server.js"]

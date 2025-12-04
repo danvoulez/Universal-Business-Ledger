@@ -31,7 +31,7 @@ The Universal Business Ledger supports **both HTTP API and WebSocket** connectio
 │  │  (server.ts)         │  │  (websocket.ts)              │ │
 │  │                      │  │                              │ │
 │  │  POST /chat          │  │  WS /subscribe               │ │
-│  │  POST /intend        │  │  - Subscriptions             │ │
+│  │  POST /intent         │  │  - Subscriptions             │ │
 │  │  GET  /session/:id   │  │  - Heartbeats                │ │
 │  │  ...                 │  │  - Intent execution         │ │
 │  └──────────────────────┘  └─────────────────────────────┘ │

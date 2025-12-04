@@ -7,7 +7,7 @@
  * 
  * Endpoints:
  *   POST /            - Process any intent
- *   POST /intend      - Process any intent (alias)
+ *   POST /intent       - Process any intent (canonical)
  *   GET  /affordances - Get available actions for context
  *   POST /simulate    - Dry-run an intent
  *   GET  /schema/:intent - Get schema for an intent
@@ -164,7 +164,7 @@ export function createHttpServer(
       // Route based on path
       switch (req.path) {
         case '/':
-        case '/intend':
+        case '/intent':
           return await handleIntend(req, auth, requestId, startTime);
           
         case '/affordances':
@@ -354,7 +354,7 @@ export function createHttpServer(
     };
     
     return await handleIntend(
-      { ...({} as HttpRequest), method: 'POST', path: '/intend', headers: {}, body: universalReq },
+      { ...({} as HttpRequest), method: 'POST', path: '/intent', headers: {}, body: universalReq },
       auth,
       requestId,
       startTime

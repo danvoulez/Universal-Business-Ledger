@@ -5,7 +5,7 @@
  * 
  * Endpoints:
  *   POST /chat              - Conversational AI interface
- *   POST /intend            - Execute any intent
+ *   POST /intent            - Execute any intent (canonical)
  *   GET  /affordances       - Get available actions
  *   POST /session/start     - Start conversation session
  *   GET  /session/:id       - Get session state
@@ -26,6 +26,7 @@ import { createOpenAIAdapter } from '../sdk/openai';
 import { createRedisRateLimiter } from '../core/operational/rate-limiter-redis';
 import type { RateLimiter } from '../core/operational/governance';
 import Redis from 'ioredis';
+import * as admin from './admin';
 
 // ============================================================================
 // CONFIGURATION
@@ -148,7 +149,7 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
         rateLimiter.register({
           id: 'intent-requests' as EntityId,
           name: 'Intent Requests',
-          description: 'Rate limit for POST /intend requests',
+          description: 'Rate limit for POST /intent requests',
           scope: { type: 'Realm' },
           limit: 100, // 100 requests per window
           window: 60000, // 1 minute
@@ -242,13 +243,37 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           }
           
           // Intent endpoint (from core/api/http-server)
-          else if ((path === '/' || path === '/intend') && req.method === 'POST') {
+          else if ((path === '/' || path === '/intent') && req.method === 'POST') {
+            // Extrair realmId da API key se disponível (não precisa informar em outros logins)
+            let resolvedRealmId = body.realm || defaultRealmId;
+            
+            // Se tem Authorization header, tentar extrair realmId da API key
+            const authHeader = req.headers.authorization;
+            if (authHeader) {
+              const apiKeyValue = authHeader.replace('Bearer ', '').trim();
+              if (apiKeyValue && apiKeyValue.startsWith('ubl_')) {
+                const apiKeyInfo = await admin.verifyApiKey(apiKeyValue);
+                if (apiKeyInfo && apiKeyInfo.realmId) {
+                  resolvedRealmId = apiKeyInfo.realmId;
+                  // Se body.realm foi fornecido, validar que corresponde à API key
+                  if (body.realm && body.realm !== apiKeyInfo.realmId) {
+                    res.writeHead(403, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ 
+                      error: 'Realm ID mismatch: API key belongs to a different realm',
+                      apiKeyRealm: apiKeyInfo.realmId,
+                      requestedRealm: body.realm,
+                    }));
+                    return;
+                  }
+                }
+              }
+            }
+            
             // Rate limiting check
             if (rateLimiter) {
-              const realmId = body.realm || defaultRealmId;
               const rateLimitCheck = await rateLimiter.check({ 
                 type: 'Realm', 
-                realmId: realmId as EntityId 
+                realmId: resolvedRealmId as EntityId 
               });
               
               if (!rateLimitCheck.allowed) {
@@ -266,9 +291,12 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
               // Record the request
               await rateLimiter.record({ 
                 type: 'Realm', 
-                realmId: realmId as EntityId 
+                realmId: resolvedRealmId as EntityId 
               });
             }
+            
+            // Atualizar body.realm com o realmId resolvido
+            body.realm = resolvedRealmId;
             
             if (intentHandler) {
               const intent = {
@@ -278,7 +306,156 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
                 timestamp: Date.now(),
                 payload: body.payload || {},
               };
-              result = await intentHandler.handle(intent);
+              
+              // Handle admin intents via admin module (before passing to intent handler)
+              const startTime = Date.now();
+              
+              if (body.intent === 'createRealm') {
+                const realmData = await admin.createRealm(body.payload, intentHandler);
+                result = {
+                  success: true,
+                  outcome: { 
+                    type: 'Created' as const, 
+                    entity: {
+                      ...realmData.realm,
+                      apiKey: realmData.apiKey, // Include API key in response
+                      entityId: realmData.entityId,
+                    }, 
+                    id: realmData.realm.id 
+                  },
+                  events: [],
+                  affordances: [
+                    { intent: 'createUser', description: 'Create a user in this realm', required: ['realmId', 'email', 'name'] },
+                    { intent: 'register', description: 'Create an entity in this realm', required: ['entityType', 'identity'] },
+                    { intent: 'createApiKey', description: 'Create additional API keys', required: ['realmId', 'entityId', 'name'] },
+                    { intent: 'query', description: 'Query entities, agreements, or assets', required: ['queryType'] },
+                  ],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'createUser') {
+                // Criar usuário - sempre requer realmId
+                const userData = await admin.createUser(body.payload, intentHandler);
+                result = {
+                  success: true,
+                  outcome: { 
+                    type: 'Created' as const, 
+                    entity: {
+                      ...userData.user,
+                      apiKey: userData.apiKey,
+                      credentials: userData.credentials, // Email e senha temporária
+                    }, 
+                    id: userData.entityId 
+                  },
+                  events: [],
+                  affordances: [
+                    { intent: 'register', description: 'Create more entities in this realm', required: ['entityType', 'identity'] },
+                    { intent: 'createApiKey', description: 'Create additional API keys', required: ['realmId', 'entityId', 'name'] },
+                    { intent: 'query', description: 'Query entities, agreements, or assets', required: ['queryType'] },
+                  ],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'createUser') {
+                // Criar usuário - sempre requer realmId
+                // Se não fornecido, tentar usar do contexto (API key)
+                if (!body.payload.realmId) {
+                  // Tentar extrair do realm resolvido acima
+                  body.payload.realmId = body.realm || defaultRealmId;
+                }
+                
+                // Validar que realmId foi fornecido
+                if (!body.payload.realmId) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ 
+                    error: 'realmId is required for createUser intent',
+                    hint: 'Provide realmId in payload or use an API key that belongs to a realm',
+                  }));
+                  return;
+                }
+                
+                const userData = await admin.createUser(body.payload, intentHandler);
+                result = {
+                  success: true,
+                  outcome: { 
+                    type: 'Created' as const, 
+                    entity: {
+                      ...userData.user,
+                      apiKey: userData.apiKey,
+                      credentials: userData.credentials, // Email e senha temporária
+                    }, 
+                    id: userData.entityId 
+                  },
+                  events: [],
+                  affordances: [
+                    { intent: 'register', description: 'Create more entities in this realm', required: ['entityType', 'identity'] },
+                    { intent: 'createApiKey', description: 'Create additional API keys', required: ['realmId', 'entityId', 'name'] },
+                    { intent: 'query', description: 'Query entities, agreements, or assets', required: ['queryType'] },
+                  ],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'createApiKey') {
+                const keyData = await admin.createApiKey(body.payload);
+                result = {
+                  success: true,
+                  outcome: { type: 'Created' as const, entity: keyData.apiKey, id: keyData.apiKey.id },
+                  events: [],
+                  affordances: [],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'query' && body.payload?.queryType === 'Realm') {
+                // Query realms
+                const realmId = body.payload?.filters?.realmId;
+                let results;
+                if (realmId) {
+                  const realm = await admin.getRealm(realmId);
+                  results = realm ? [realm] : [];
+                } else {
+                  results = await admin.listRealms();
+                }
+                result = {
+                  success: true,
+                  outcome: { type: 'Queried' as const, results },
+                  events: [],
+                  affordances: [],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'query' && body.payload?.queryType === 'Entity') {
+                // Query entities
+                const realmId = body.payload?.filters?.realmId;
+                const results = await admin.listEntities(realmId);
+                result = {
+                  success: true,
+                  outcome: { type: 'Queried' as const, results },
+                  events: [],
+                  affordances: [],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'query' && body.payload?.queryType === 'ApiKey') {
+                // Query API keys
+                const realmId = body.payload?.filters?.realmId;
+                const entityId = body.payload?.filters?.entityId;
+                const results = await admin.listApiKeys(realmId, entityId);
+                result = {
+                  success: true,
+                  outcome: { type: 'Queried' as const, results },
+                  events: [],
+                  affordances: [],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else if (body.intent === 'revokeApiKey') {
+                const revoked = await admin.revokeApiKey(body.payload?.keyId);
+                result = {
+                  success: revoked,
+                  outcome: revoked 
+                    ? { type: 'Updated' as const, entity: { revoked: true }, changes: ['revoked'] }
+                    : { type: 'Nothing' as const, reason: 'API key not found' },
+                  events: [],
+                  affordances: [],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } else {
+                // Pass through to intent handler for other intents
+                result = await intentHandler.handle(intent);
+              }
             } else {
               result = { error: 'Intent handler not configured' };
             }
@@ -400,12 +577,20 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
 
 HTTP Endpoints:
   POST /chat              Conversational AI interface
-  POST /intend            Execute any intent
+  POST /intent            Execute any intent
   GET  /affordances       Get available actions
   POST /session/start     Start conversation session
   GET  /session/:id       Get session state
   GET  /suggestions       Get autocomplete suggestions
   GET  /health            Health check
+
+Admin Intents (via POST /intent):
+  createRealm             Create a new realm
+  createApiKey            Create API key for realm/entity
+  query (queryType: Realm) List/get realms
+  query (queryType: Entity) List/get entities
+  query (queryType: ApiKey) List/get API keys
+  revokeApiKey            Revoke an API key
 
 WebSocket:
   WS   /subscribe         Real-time event subscriptions

@@ -71,6 +71,29 @@ This isn't a design pattern. It's the physics of business.
 
 ---
 
+## 🚀 Quickstart para Novos Tenants
+
+### Criar seu Realm e receber credenciais
+
+```bash
+POST /intent
+{
+  "intent": "createRealm",
+  "payload": {
+    "name": "Minha Empresa"
+  }
+}
+```
+
+**Resposta inclui:**
+- ✅ `realmId` - ID do seu realm
+- ✅ `apiKey` - Chave API para autenticação
+- ✅ `entityId` - ID da entidade sistema
+
+📚 **Guia completo**: Veja `docs/TENANT_ONBOARDING_GUIDE.md`
+
+---
+
 ## 🏗️ Architecture
 
 ```
