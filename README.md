@@ -17,6 +17,10 @@
   <em>"Agreements are the force that binds entities together.<br/>Without them, there are no relationships—only isolated atoms."</em>
 </p>
 
+> **📖 IMPORTANT:** This README is a quick overview. For the complete philosophical foundation and architecture, see:
+> - **[PHILOSOPHY.md](./PHILOSOPHY.md)** - The core philosophy: "Every relationship is an Agreement"
+> - **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Complete system architecture and design
+
 ---
 
 ## The Core Insight
@@ -261,14 +265,19 @@ npm run dev
 
 ## 📚 Documentation
 
+### Core Documents (Start Here)
 | Document | Description |
 |----------|-------------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Complete system architecture |
-| [PHILOSOPHY.md](./PHILOSOPHY.md) | The philosophical foundation |
+| **[PHILOSOPHY.md](./PHILOSOPHY.md)** | ⭐ **The philosophical foundation** - "Every relationship is an Agreement" |
+| **[ARCHITECTURE.md](./ARCHITECTURE.md)** | ⭐ **Complete system architecture** - Design, modules, data flow |
+
+### Additional Documentation
+| Document | Description |
+|----------|-------------|
 | [docs/DEPLOY.md](./docs/DEPLOY.md) | Deployment guide |
 | [core/store/postgres-schema.sql](./core/store/postgres-schema.sql) | Production database schema |
 
-Ver [docs/README.md](./docs/README.md) para documentação completa.
+**Note:** The PHILOSOPHY.md and ARCHITECTURE.md documents are the authoritative source for understanding the system's design principles. This README provides a quick overview and practical examples.
 
 ---
 

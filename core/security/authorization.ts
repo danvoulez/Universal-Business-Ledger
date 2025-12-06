@@ -102,7 +102,20 @@ export type ResourceType =
   | 'Event'
   | 'Memory'
   | 'Configuration'
+  | 'Workspace'
   | '*'; // Wildcard
+
+/**
+ * Workspace-specific resources
+ */
+export const WORKSPACE_RESOURCES = {
+  'Workspace:*': 'All workspace operations',
+  'Workspace:Content': 'Workspace content (files)',
+  'Workspace:Members': 'Workspace membership',
+  'Workspace:Function': 'Workspace functions',
+  'Workspace:Git': 'Git operations',
+  'Workspace:File': 'File operations',
+} as const;
 
 export interface AuthorizationContext {
   /** Current realm */

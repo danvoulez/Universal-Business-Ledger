@@ -27,6 +27,21 @@ import {
 
 export interface EventStore {
   /**
+   * Name of the event store implementation
+   */
+  readonly name?: string;
+  
+  /**
+   * Get PostgreSQL pool (only available for PostgreSQL EventStore)
+   */
+  getPool?: () => any;
+  
+  /**
+   * Health check for the event store
+   */
+  healthCheck?(): Promise<{ healthy: boolean; latencyMs?: number; message?: string }>;
+  
+  /**
    * Append a new event to the store.
    * This is the ONLY write operation - no updates, no deletes.
    */
@@ -134,6 +149,16 @@ export function createInMemoryEventStore(): EventStore {
   const makeAggregateKey = (type: AggregateType, id: EntityId) => `${type}:${id}`;
   
   return {
+    name: 'In-Memory',
+    
+    async healthCheck(): Promise<{ healthy: boolean; latencyMs?: number; message?: string }> {
+      return {
+        healthy: true,
+        latencyMs: 0,
+        message: 'In-memory store (data will not persist)',
+      };
+    },
+    
     async append<T>(eventData: EventInput<T>): Promise<Event<T>> {
       const sequence = temporal.acquireNextSequence();
       const previousEvent = events.length > 0 ? events[events.length - 1] : null;

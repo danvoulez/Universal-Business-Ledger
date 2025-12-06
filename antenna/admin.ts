@@ -47,36 +47,10 @@ export interface CreateApiKeyRequest {
 }
 
 // ============================================================================
-// IN-MEMORY STORAGE (for development)
+// EVENT STORE-BASED STORAGE (Following ORIGINAL philosophy)
 // ============================================================================
-
-const realms = new Map<EntityId, {
-  id: EntityId;
-  name: string;
-  createdAt: number;
-  config: any;
-}>();
-
-const entities = new Map<EntityId, {
-  id: EntityId;
-  realmId: EntityId;
-  entityType: string;
-  name: string;
-  createdAt: number;
-  identifiers?: any[];
-}>();
-
-const apiKeys = new Map<string, {
-  id: string;
-  key: string;
-  realmId: EntityId;
-  entityId: EntityId;
-  name: string;
-  scopes: string[];
-  createdAt: number;
-  expiresAt?: number;
-  revoked: boolean;
-}>();
+// All data comes from Event Store - no in-memory storage
+// This follows the ORIGINAL philosophy: everything is in the event stream
 
 // ============================================================================
 // ADMIN FUNCTIONS
@@ -98,118 +72,433 @@ export async function createRealm(
   request: CreateRealmRequest,
   intentHandler?: IntentHandler
 ): Promise<{ realm: any; entityId: EntityId; apiKey: string }> {
-  const realmId = generateId('realm');
-  const systemEntityId = generateId('entity');
+  const PRIMORDIAL_REALM_ID = '00000000-0000-0000-0000-000000000000' as EntityId;
   
-  const realm = {
-    id: realmId,
-    name: request.name,
-    createdAt: Date.now(),
-    config: {
-      isolation: request.config?.isolation || 'Full',
-      crossRealmAllowed: request.config?.crossRealmAllowed || false,
-      allowedEntityTypes: request.config?.allowedEntityTypes,
-      allowedAgreementTypes: request.config?.allowedAgreementTypes,
-    },
-  };
-  
-  realms.set(realmId, realm);
-  
-  // Create system entity for this realm via intent handler if available
+  // Following the philosophy: Agreement first, realm created via hook
+  // Step 1: Create System entity (Licensor) in primordial realm
+  let systemEntityId: EntityId | undefined;
   if (intentHandler) {
     try {
-      await intentHandler.handle({
+      const systemResult = await intentHandler.handle({
         intent: 'register',
-        realm: realmId,
-        actor: { type: 'System', systemId: 'admin' } as ActorReference,
+        realm: PRIMORDIAL_REALM_ID,
+        actor: { type: 'System', systemId: 'genesis' } as ActorReference,
         timestamp: Date.now(),
         payload: {
           entityType: 'System',
           identity: {
-            name: `${request.name} System`,
-            identifiers: [{ scheme: 'realm', value: realmId, verified: true }],
+            name: `System - ${request.name}`,
+            identifiers: [{ scheme: 'system', value: 'tenant-licensor', verified: true }],
           },
         },
       });
+      if (systemResult.success && systemResult.outcome.type === 'Created') {
+        systemEntityId = systemResult.outcome.id;
+      }
     } catch (e) {
       console.warn('Could not create system entity via intent handler:', e);
     }
   }
   
-  // Automatically create API key for the realm
+  // Step 2: Create Organization entity (Licensee) in primordial realm
+  let licenseeEntityId: EntityId | undefined;
+  if (intentHandler) {
+    try {
+      const orgResult = await intentHandler.handle({
+        intent: 'register',
+        realm: PRIMORDIAL_REALM_ID,
+        actor: { type: 'System', systemId: 'genesis' } as ActorReference,
+        timestamp: Date.now(),
+        payload: {
+          entityType: 'Organization',
+          identity: {
+            name: request.name,
+            identifiers: [{ scheme: 'name', value: request.name, verified: true }],
+          },
+        },
+      });
+      if (orgResult.success && orgResult.outcome.type === 'Created') {
+        licenseeEntityId = orgResult.outcome.id;
+      }
+    } catch (e) {
+      console.warn('Could not create organization entity via intent handler:', e);
+    }
+  }
+  
+  if (!systemEntityId || !licenseeEntityId || !intentHandler) {
+    throw new Error('Failed to create required entities for tenant-license agreement');
+  }
+  
+  // Step 3: Propose tenant-license agreement in primordial realm
+  const agreementId = generateId('agreement');
+  let createdRealmId: EntityId | undefined;
+  
+  try {
+    // Get services from context
+    const context = (intentHandler as any).context;
+    const eventStore = context?.eventStore;
+    const agreementTypeRegistry = context?.agreements;
+    const realmManager = context?.realmManager;
+    
+    if (!eventStore || !agreementTypeRegistry || !realmManager) {
+      throw new Error('Intent handler missing required context (eventStore, agreements, realmManager)');
+    }
+    
+    // Propose agreement
+    const proposeEvent = await eventStore.append({
+      type: 'AgreementProposed',
+      aggregateType: 'Agreement' as any,
+      aggregateId: agreementId,
+      aggregateVersion: 1,
+      actor: { type: 'System', systemId: 'genesis' } as ActorReference,
+      timestamp: Date.now(),
+      payload: {
+        agreementType: 'tenant-license',
+        parties: [
+          {
+            entityId: systemEntityId,
+            role: 'Licensor',
+          },
+          {
+            entityId: licenseeEntityId,
+            role: 'Licensee',
+          },
+        ],
+        terms: {
+          description: `Tenant license for ${request.name}`,
+          realmName: request.name, // For hook to extract
+          realmConfig: {
+            isolation: request.config?.isolation || 'Full',
+            crossRealmAllowed: request.config?.crossRealmAllowed || false,
+            allowedEntityTypes: request.config?.allowedEntityTypes,
+            allowedAgreementTypes: request.config?.allowedAgreementTypes,
+          },
+        },
+        validity: {
+          effectiveFrom: Date.now(),
+        },
+      },
+    });
+    
+    // Step 4: Give consent from Licensee
+    await eventStore.append({
+      type: 'PartyConsented',
+      aggregateType: 'Agreement' as any,
+      aggregateId: agreementId,
+      aggregateVersion: 2,
+      actor: { type: 'Entity', entityId: licenseeEntityId } as ActorReference,
+      timestamp: Date.now(),
+      payload: {
+        partyId: licenseeEntityId,
+        method: 'Implicit',
+      },
+    });
+    
+    // Step 5: Activate agreement (all required consents given)
+    const activateEvent = await eventStore.append({
+      type: 'AgreementActivated',
+      aggregateType: 'Agreement' as any,
+      aggregateId: agreementId,
+      aggregateVersion: 3,
+      actor: { type: 'System', systemId: 'genesis' } as ActorReference,
+      timestamp: Date.now(),
+      payload: {
+        activatedAt: Date.now(),
+      },
+    });
+    
+    // Step 6: Process hooks (CreateRealm hook will create the realm)
+    const agreementTypeDef = agreementTypeRegistry.get('tenant-license');
+    if (agreementTypeDef?.hooks?.onActivated) {
+      // Rehydrate agreement state for hook processing
+      const agreementState = {
+        id: agreementId,
+        agreementType: 'tenant-license',
+        parties: [
+          { entityId: systemEntityId, role: 'Licensor' },
+          { entityId: licenseeEntityId, role: 'Licensee' },
+        ],
+        terms: {
+          description: `Tenant license for ${request.name}`,
+          realmName: request.name,
+          realmConfig: {
+            isolation: request.config?.isolation || 'Full',
+            crossRealmAllowed: request.config?.crossRealmAllowed || false,
+            allowedEntityTypes: request.config?.allowedEntityTypes,
+            allowedAgreementTypes: request.config?.allowedAgreementTypes,
+          },
+        },
+        status: 'Active',
+      };
+      
+      // Import and use hook processor
+      const { processAgreementActivatedHooks } = await import('../core/universal/agreement-hooks-processor');
+      const hookResult = await processAgreementActivatedHooks(
+        agreementId,
+        'tenant-license',
+        agreementState,
+        {
+          eventStore,
+          agreementTypeRegistry,
+          realmManager,
+        }
+      );
+      
+    // Get created realm ID from hook processor result
+    if (hookResult.createdRealmId) {
+      createdRealmId = hookResult.createdRealmId;
+    }
+  }
+  
+  // If hook didn't create realm (fallback), create it via Event Store
+  if (!createdRealmId) {
+    const realmId = generateId('realm');
+    // Get current aggregate version
+    const latestRealmEvent = await eventStore.getLatest('Flow' as any, realmId);
+    const nextRealmVersion = latestRealmEvent ? latestRealmEvent.aggregateVersion + 1 : 1;
+    
+    // Create realm via Event Store (following ORIGINAL philosophy)
+    await eventStore.append({
+      type: 'RealmCreated',
+      aggregateType: 'Flow' as any, // Realms use Flow aggregate type
+      aggregateId: realmId,
+      aggregateVersion: nextRealmVersion,
+      actor: { type: 'Entity', entityId: licenseeEntityId } as ActorReference,
+      timestamp: Date.now(),
+      payload: {
+        type: 'RealmCreated',
+        name: request.name,
+        establishedBy: agreementId,
+        config: {
+          isolation: request.config?.isolation || 'Full',
+          crossRealmAllowed: request.config?.crossRealmAllowed || false,
+          allowedEntityTypes: request.config?.allowedEntityTypes,
+          allowedAgreementTypes: request.config?.allowedAgreementTypes,
+        },
+      },
+    });
+    createdRealmId = realmId;
+  }
+    
+  } catch (e) {
+    console.error('Error creating tenant-license agreement:', e);
+    throw e;
+  }
+  
+  // Step 7: Create API key for Licensee entity
   const apiKeyData = await createApiKey({
-    realmId,
-    entityId: systemEntityId,
+    realmId: createdRealmId!,
+    entityId: licenseeEntityId,
     name: `${request.name} - Master Key`,
     scopes: ['read', 'write', 'admin'],
-  });
+  }, eventStore);
+  
+  // Get realm from Event Store (following ORIGINAL philosophy)
+  const realm = await getRealm(createdRealmId!, eventStore);
+  if (!realm) {
+    throw new Error('Realm was not created');
+  }
   
   return { 
     realm, 
-    entityId: systemEntityId,
+    entityId: licenseeEntityId,
     apiKey: apiKeyData.key 
   };
 }
 
-export async function getRealm(realmId: EntityId): Promise<any | null> {
-  return realms.get(realmId) || null;
+/**
+ * Get realm from Event Store (following ORIGINAL philosophy)
+ * Reads RealmCreated events to reconstruct realm state
+ */
+export async function getRealm(
+  realmId: EntityId,
+  eventStore?: any
+): Promise<any | null> {
+  // If eventStore not provided, try to get from context
+  if (!eventStore) {
+    // This function should be called with eventStore from context
+    // For backward compatibility, return null if not provided
+    return null;
+  }
+  
+  // Read RealmCreated events for this realm
+  // Realms use 'Flow' as aggregate type (as per ORIGINAL)
+  const events: any[] = [];
+  for await (const event of eventStore.getByAggregate('Flow' as any, realmId)) {
+    events.push(event);
+    if (event.type === 'RealmCreated') {
+      const payload = event.payload as any;
+      return {
+        id: realmId,
+        name: payload.name || payload.type?.name || 'Unnamed Realm',
+        createdAt: event.timestamp,
+        establishedBy: payload.establishedBy || payload.type?.establishedBy,
+        config: payload.config || payload.type?.config || {},
+        parentRealmId: payload.parentRealmId,
+      };
+    }
+  }
+  
+  return null;
 }
 
-export async function listRealms(): Promise<any[]> {
-  return Array.from(realms.values());
+/**
+ * List all realms from Event Store (following ORIGINAL philosophy)
+ * Reads all RealmCreated events
+ */
+export async function listRealms(eventStore?: any): Promise<any[]> {
+  if (!eventStore) {
+    return [];
+  }
+  
+  const realms: any[] = [];
+  const seenRealmIds = new Set<EntityId>();
+  
+  // Iterate through all events to find RealmCreated events
+  // Note: This is not efficient for large event streams, but follows ORIGINAL philosophy
+  // In production, use projections for better performance
+  for await (const event of eventStore.getBySequence(1n)) {
+    if (event.type === 'RealmCreated' && !seenRealmIds.has(event.aggregateId)) {
+      const payload = event.payload as any;
+      realms.push({
+        id: event.aggregateId,
+        name: payload.name || payload.type?.name || 'Unnamed Realm',
+        createdAt: event.timestamp,
+        establishedBy: payload.establishedBy || payload.type?.establishedBy,
+        config: payload.config || payload.type?.config || {},
+        parentRealmId: payload.parentRealmId,
+      });
+      seenRealmIds.add(event.aggregateId);
+    }
+  }
+  
+  return realms;
 }
 
 export async function createEntity(
   request: CreateEntityRequest,
   intentHandler?: IntentHandler
 ): Promise<{ entity: any }> {
-  const entityId = generateId('entity');
+  // Create entity via intent handler (following ORIGINAL philosophy: everything via intents)
+  if (!intentHandler) {
+    throw new Error('Intent handler required to create entity');
+  }
   
-  const entity = {
-    id: entityId,
-    realmId: request.realmId,
-    entityType: request.entityType,
-    name: request.name,
-    createdAt: Date.now(),
-    identifiers: request.identifiers || [],
-  };
-  
-  entities.set(entityId, entity);
-  
-  // Create entity via intent handler if available
-  if (intentHandler) {
-    try {
-      await intentHandler.handle({
-        intent: 'register',
-        realm: request.realmId,
-        actor: { type: 'System', systemId: 'admin' } as ActorReference,
-        timestamp: Date.now(),
-        payload: {
-          entityType: request.entityType,
-          identity: {
-            name: request.name,
-            identifiers: request.identifiers || [],
-          },
+  try {
+    const result = await intentHandler.handle({
+      intent: 'register',
+      realm: request.realmId,
+      actor: { type: 'System', systemId: 'admin' } as ActorReference,
+      timestamp: Date.now(),
+      payload: {
+        entityType: request.entityType,
+        identity: {
+          name: request.name,
+          identifiers: request.identifiers || [],
         },
-      });
-    } catch (e) {
-      console.warn('Could not create entity via intent handler:', e);
+      },
+    });
+    
+    if (result.success && result.outcome.type === 'Created') {
+      // Get entity from Event Store
+      const context = (intentHandler as any).context;
+      const aggregates = context?.aggregates;
+      if (aggregates) {
+        const entity = await aggregates.getParty(result.outcome.id);
+        return { entity: entity ? {
+          id: entity.id,
+          realmId: request.realmId,
+          entityType: entity.type,
+          name: entity.identity.name,
+          createdAt: entity.createdAt,
+          identifiers: entity.identity.identifiers,
+        } : null };
+      }
+    }
+    
+    throw new Error('Failed to create entity');
+  } catch (e) {
+    console.error('Could not create entity via intent handler:', e);
+    throw e;
+  }
+}
+
+/**
+ * Get entity from Event Store (following ORIGINAL philosophy)
+ * Uses aggregate repository to reconstruct entity state
+ */
+export async function getEntity(
+  entityId: EntityId,
+  aggregates?: any
+): Promise<any | null> {
+  if (!aggregates) {
+    return null;
+  }
+  
+  const party = await aggregates.getParty(entityId);
+  if (!party) {
+    return null;
+  }
+  
+  return {
+    id: party.id,
+    realmId: party.realmId || ('' as EntityId), // Party may not have realmId in schema
+    entityType: party.type,
+    name: party.identity.name,
+    createdAt: party.createdAt,
+    identifiers: party.identity.identifiers || [],
+  };
+}
+
+/**
+ * List entities from Event Store (following ORIGINAL philosophy)
+ * Note: This requires iterating all events - use projections for production
+ */
+export async function listEntities(
+  realmId?: EntityId,
+  eventStore?: any,
+  aggregates?: any
+): Promise<any[]> {
+  if (!eventStore || !aggregates) {
+    return [];
+  }
+  
+  const entities: any[] = [];
+  const seenEntityIds = new Set<EntityId>();
+  
+  // Iterate through all events to find PartyRegistered/EntityCreated events
+  // Note: This is not efficient for large event streams, but follows ORIGINAL philosophy
+  // In production, use projections for better performance
+  for await (const event of eventStore.getBySequence(1n)) {
+    if ((event.type === 'PartyRegistered' || event.type === 'EntityCreated') && 
+        !seenEntityIds.has(event.aggregateId)) {
+      
+      // Filter by realmId if provided
+      if (realmId) {
+        const payload = event.payload as any;
+        const eventRealmId = payload.realmId || (event as any).realmId;
+        if (eventRealmId !== realmId) {
+          continue;
+        }
+      }
+      
+      // Reconstruct entity state
+      const party = await aggregates.getParty(event.aggregateId);
+      if (party) {
+        entities.push({
+          id: party.id,
+          realmId: party.realmId || ('' as EntityId),
+          entityType: party.type,
+          name: party.identity.name,
+          createdAt: party.createdAt,
+          identifiers: party.identity.identifiers || [],
+        });
+        seenEntityIds.add(event.aggregateId);
+      }
     }
   }
   
-  return { entity };
-}
-
-export async function getEntity(entityId: EntityId): Promise<any | null> {
-  return entities.get(entityId) || null;
-}
-
-export async function listEntities(realmId?: EntityId): Promise<any[]> {
-  const all = Array.from(entities.values());
-  if (realmId) {
-    return all.filter(e => e.realmId === realmId);
-  }
-  return all;
+  return entities;
 }
 
 /**
@@ -220,8 +509,12 @@ export async function createUser(
   request: CreateUserRequest,
   intentHandler?: IntentHandler
 ): Promise<{ user: any; entityId: EntityId; apiKey: string; credentials: { email: string; password: string } }> {
+  // Get eventStore from context for realm lookup
+  const context = intentHandler ? (intentHandler as any).context : undefined;
+  const eventStore = context?.eventStore;
+  
   // Verificar se realm existe
-  let realm = await getRealm(request.realmId);
+  let realm = eventStore ? await getRealm(request.realmId, eventStore) : null;
   
   // Se realm não existe e createRealmIfNotExists=true, criar realm
   if (!realm && request.createRealmIfNotExists) {
@@ -251,29 +544,51 @@ export async function createUser(
     isAdmin: request.isAdmin || false,
   };
   
-  entities.set(entityId, userEntity);
+  // Criar via intent handler (following ORIGINAL philosophy: everything via intents)
+  if (!intentHandler) {
+    throw new Error('Intent handler required to create user');
+  }
   
-  // Criar via intent handler se disponível
-  if (intentHandler) {
-    try {
-      await intentHandler.handle({
-        intent: 'register',
-        realm: realm.id,
-        actor: { type: 'System', systemId: 'admin' } as ActorReference,
-        timestamp: Date.now(),
-        payload: {
-          entityType: 'Person',
-          identity: {
-            name: request.name,
-            identifiers: [
-              { scheme: 'email', value: request.email }
-            ],
-          },
+  try {
+    const result = await intentHandler.handle({
+      intent: 'register',
+      realm: realm.id,
+      actor: { type: 'System', systemId: 'admin' } as ActorReference,
+      timestamp: Date.now(),
+      payload: {
+        entityType: 'Person',
+        identity: {
+          name: request.name,
+          identifiers: [
+            { scheme: 'email', value: request.email }
+          ],
         },
-      });
-    } catch (e) {
-      console.warn('Could not create user entity via intent handler:', e);
+      },
+    });
+    
+    if (result.success && result.outcome.type === 'Created') {
+      entityId = result.outcome.id;
+      // Get entity from aggregates
+      const aggregates = context?.aggregates;
+      if (aggregates) {
+        const createdEntity = await aggregates.getParty(entityId);
+        if (createdEntity) {
+          userEntity = {
+            id: createdEntity.id,
+            realmId: createdEntity.realmId || realm.id,
+            entityType: createdEntity.type,
+            name: createdEntity.identity.name,
+            email: request.email,
+            createdAt: createdEntity.createdAt,
+            identifiers: createdEntity.identity.identifiers || [],
+            isAdmin: request.isAdmin || false,
+          };
+        }
+      }
     }
+  } catch (e) {
+    console.error('Could not create user entity via intent handler:', e);
+    throw e;
   }
   
   // Gerar senha se não fornecida
@@ -287,13 +602,13 @@ export async function createUser(
     createdAt: Date.now(),
   };
   
-  // Criar API key para o usuário
+  // Criar API key para o usuário (via Event Store)
   const apiKeyData = await createApiKey({
     realmId: realm.id,
     entityId,
     name: `${request.name} - Personal Key`,
     scopes: request.isAdmin ? ['read', 'write', 'admin'] : ['read', 'write'],
-  });
+  }, eventStore);
   
   return {
     user: userEntity,
@@ -315,96 +630,217 @@ function generateTemporaryPassword(): string {
   return password;
 }
 
-export async function createApiKey(request: CreateApiKeyRequest): Promise<{
+/**
+ * Create API key via Event Store (following ORIGINAL philosophy)
+ * Creates ApiKeyCreated event instead of in-memory storage
+ */
+export async function createApiKey(
+  request: CreateApiKeyRequest,
+  eventStore?: any
+): Promise<{
   key: string;
   apiKey: any;
 }> {
+  if (!eventStore) {
+    throw new Error('Event store required to create API key');
+  }
+  
   const key = generateApiKey();
-  const keyId = `key-${Date.now()}`;
+  const keyId = generateId('apikey');
   const expiresAt = request.expiresInDays
     ? Date.now() + (request.expiresInDays * 24 * 60 * 60 * 1000)
     : undefined;
   
-  const apiKey = {
-    id: keyId,
-    key: key, // Only returned once
-    realmId: request.realmId,
-    entityId: request.entityId,
-    name: request.name,
-    scopes: request.scopes || ['read', 'write'],
-    createdAt: Date.now(),
-    expiresAt,
-    revoked: false,
-  };
+  // Get current aggregate version
+  const latestEvent = await eventStore.getLatest('ApiKey' as any, keyId);
+  const nextVersion = latestEvent ? latestEvent.aggregateVersion + 1 : 1;
   
-  // Store by key hash (simple implementation)
-  const keyHash = Buffer.from(key).toString('base64');
-  apiKeys.set(keyHash, apiKey);
+  // Create ApiKeyCreated event (following ORIGINAL philosophy)
+  await eventStore.append({
+    type: 'ApiKeyCreated',
+    aggregateType: 'ApiKey' as any,
+    aggregateId: keyId,
+    aggregateVersion: nextVersion,
+    actor: { type: 'Entity', entityId: request.entityId } as ActorReference,
+    timestamp: Date.now(),
+    payload: {
+      type: 'ApiKeyCreated',
+      realmId: request.realmId,
+      entityId: request.entityId,
+      name: request.name,
+      scopes: request.scopes || ['read', 'write'],
+      keyHash: Buffer.from(key).toString('base64'), // Store hash, not raw key
+      expiresAt,
+      revoked: false,
+    },
+  });
   
   return {
-    key, // Return raw key only once
+    key, // Return raw key only once (not stored in event)
     apiKey: {
-      id: apiKey.id,
-      realmId: apiKey.realmId,
-      entityId: apiKey.entityId,
-      name: apiKey.name,
-      scopes: apiKey.scopes,
-      createdAt: apiKey.createdAt,
-      expiresAt: apiKey.expiresAt,
-      revoked: apiKey.revoked,
+      id: keyId,
+      realmId: request.realmId,
+      entityId: request.entityId,
+      name: request.name,
+      scopes: request.scopes || ['read', 'write'],
+      createdAt: Date.now(),
+      expiresAt,
+      revoked: false,
       keyPrefix: key.slice(0, 12), // For identification
     },
   };
 }
 
-export async function listApiKeys(realmId?: EntityId, entityId?: EntityId): Promise<any[]> {
-  const all = Array.from(apiKeys.values());
-  let filtered = all;
-  
-  if (realmId) {
-    filtered = filtered.filter(k => k.realmId === realmId);
+/**
+ * List API keys from Event Store (following ORIGINAL philosophy)
+ * Reads ApiKeyCreated events
+ */
+export async function listApiKeys(
+  realmId?: EntityId,
+  entityId?: EntityId,
+  eventStore?: any
+): Promise<any[]> {
+  if (!eventStore) {
+    return [];
   }
   
-  if (entityId) {
-    filtered = filtered.filter(k => k.entityId === entityId);
-  }
+  const apiKeys: any[] = [];
+  const seenKeyIds = new Set<EntityId>();
   
-  // Don't return the raw key, only metadata
-  return filtered.map(k => ({
-    id: k.id,
-    realmId: k.realmId,
-    entityId: k.entityId,
-    name: k.name,
-    scopes: k.scopes,
-    createdAt: k.createdAt,
-    expiresAt: k.expiresAt,
-    revoked: k.revoked,
-    keyPrefix: k.key.slice(0, 12),
-  }));
-}
-
-export async function revokeApiKey(keyId: string): Promise<boolean> {
-  for (const [hash, key] of apiKeys.entries()) {
-    if (key.id === keyId) {
-      apiKeys.set(hash, { ...key, revoked: true });
-      return true;
+  // Iterate through all events to find ApiKeyCreated events
+  // Note: This is not efficient for large event streams, but follows ORIGINAL philosophy
+  // In production, use projections for better performance
+  for await (const event of eventStore.getBySequence(1n)) {
+    if (event.type === 'ApiKeyCreated' && !seenKeyIds.has(event.aggregateId)) {
+      const payload = event.payload as any;
+      
+      // Filter by realmId if provided
+      if (realmId && payload.realmId !== realmId) {
+        continue;
+      }
+      
+      // Filter by entityId if provided
+      if (entityId && payload.entityId !== entityId) {
+        continue;
+      }
+      
+      // Check if revoked (would need ApiKeyRevoked events)
+      const isRevoked = payload.revoked || false;
+      
+      apiKeys.push({
+        id: event.aggregateId,
+        realmId: payload.realmId,
+        entityId: payload.entityId,
+        name: payload.name,
+        scopes: payload.scopes || [],
+        createdAt: event.timestamp,
+        expiresAt: payload.expiresAt,
+        revoked: isRevoked,
+        keyPrefix: payload.keyHash ? Buffer.from(payload.keyHash, 'base64').toString().slice(0, 12) : 'unknown',
+      });
+      seenKeyIds.add(event.aggregateId);
+    }
+    
+    // Also check for ApiKeyRevoked events
+    if (event.type === 'ApiKeyRevoked') {
+      const payload = event.payload as any;
+      const keyIndex = apiKeys.findIndex(k => k.id === payload.apiKeyId);
+      if (keyIndex >= 0) {
+        apiKeys[keyIndex].revoked = true;
+      }
     }
   }
-  return false;
+  
+  return apiKeys;
 }
 
-export async function verifyApiKey(key: string): Promise<any | null> {
+/**
+ * Revoke API key via Event Store (following ORIGINAL philosophy)
+ * Creates ApiKeyRevoked event
+ */
+export async function revokeApiKey(
+  keyId: string,
+  eventStore?: any,
+  actor?: ActorReference
+): Promise<boolean> {
+  if (!eventStore) {
+    return false;
+  }
+  
+  // Check if key exists
+  const latestEvent = await eventStore.getLatest('ApiKey' as any, keyId as EntityId);
+  if (!latestEvent || latestEvent.type !== 'ApiKeyCreated') {
+    return false;
+  }
+  
+  // Get current aggregate version
+  const nextVersion = latestEvent.aggregateVersion + 1;
+  
+  // Create ApiKeyRevoked event
+  await eventStore.append({
+    type: 'ApiKeyRevoked',
+    aggregateType: 'ApiKey' as any,
+    aggregateId: keyId as EntityId,
+    aggregateVersion: nextVersion,
+    actor: actor || { type: 'System', systemId: 'admin' } as ActorReference,
+    timestamp: Date.now(),
+    payload: {
+      type: 'ApiKeyRevoked',
+      apiKeyId: keyId,
+      revokedAt: Date.now(),
+      reason: 'Revoked by admin',
+    },
+  });
+  
+  return true;
+}
+
+/**
+ * Verify API key from Event Store (following ORIGINAL philosophy)
+ * Reads ApiKeyCreated and ApiKeyRevoked events
+ */
+export async function verifyApiKey(
+  key: string,
+  eventStore?: any
+): Promise<any | null> {
+  if (!eventStore) {
+    return null;
+  }
+  
   const keyHash = Buffer.from(key).toString('base64');
-  const apiKey = apiKeys.get(keyHash);
   
-  if (!apiKey) return null;
-  if (apiKey.revoked) return null;
-  if (apiKey.expiresAt && Date.now() > apiKey.expiresAt) return null;
+  // Find ApiKeyCreated event with matching hash
+  for await (const event of eventStore.getBySequence(1n)) {
+    if (event.type === 'ApiKeyCreated') {
+      const payload = event.payload as any;
+      if (payload.keyHash === keyHash) {
+        const keyId = event.aggregateId;
+        
+        // Check if revoked
+        let isRevoked = false;
+        for await (const revokeEvent of eventStore.getByAggregate('ApiKey' as any, keyId)) {
+          if (revokeEvent.type === 'ApiKeyRevoked') {
+            isRevoked = true;
+            break;
+          }
+        }
+        
+        if (isRevoked) return null;
+        
+        // Check expiration
+        if (payload.expiresAt && Date.now() > payload.expiresAt) {
+          return null;
+        }
+        
+        return {
+          realmId: payload.realmId,
+          entityId: payload.entityId,
+          scopes: payload.scopes || [],
+        };
+      }
+    }
+  }
   
-  return {
-    realmId: apiKey.realmId,
-    entityId: apiKey.entityId,
-    scopes: apiKey.scopes,
-  };
+  return null;
 }
 

@@ -213,6 +213,21 @@ export interface RepositoryPushed extends Event {
 }
 
 /**
+ * FunctionRegistered - Function registered in workspace
+ */
+export interface FunctionRegistered extends Event {
+  readonly type: 'FunctionRegistered';
+  readonly payload: {
+    readonly workspaceId: EntityId;
+    readonly functionId: EntityId;
+    readonly name: string;
+    readonly language: 'javascript' | 'python' | 'typescript';
+    readonly entryPoint: string;
+    readonly registeredBy: ActorReference;
+  };
+}
+
+/**
  * FunctionExecuted - Code execution
  */
 export interface FunctionExecuted extends Event {

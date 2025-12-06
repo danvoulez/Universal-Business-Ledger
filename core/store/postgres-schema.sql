@@ -341,6 +341,34 @@ CREATE INDEX idx_workflows_state ON workflows_projection (current_state);
 CREATE INDEX idx_workflows_active ON workflows_projection (is_complete) WHERE is_complete = false;
 
 -- =============================================================================
+-- WORKSPACE PROJECTION (Read-optimized view for workspaces)
+-- =============================================================================
+
+CREATE TABLE workspace_projection (
+    id                  UUID PRIMARY KEY,
+    realm_id            UUID NOT NULL,
+    name                TEXT NOT NULL,
+    description         TEXT,
+    runtime             TEXT NOT NULL,
+    resources           JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status              TEXT NOT NULL DEFAULT 'Active' CHECK (status IN ('Active', 'Suspended', 'Archived')),
+    version             BIGINT NOT NULL,
+    created_at          BIGINT NOT NULL,
+    created_by          JSONB NOT NULL,
+    last_activity_at    BIGINT NOT NULL,
+    repositories        JSONB DEFAULT '[]'::jsonb,
+    files               JSONB DEFAULT '[]'::jsonb,
+    functions           UUID[] DEFAULT ARRAY[]::UUID[],
+    updated_at          BIGINT NOT NULL
+);
+
+CREATE INDEX idx_workspace_projection_realm ON workspace_projection(realm_id);
+CREATE INDEX idx_workspace_projection_status ON workspace_projection(status);
+CREATE INDEX idx_workspace_projection_name ON workspace_projection USING GIN (to_tsvector('simple', name));
+CREATE INDEX idx_workspace_projection_files ON workspace_projection USING GIN (files jsonb_path_ops);
+CREATE INDEX idx_workspace_projection_functions ON workspace_projection USING GIN (functions);
+
+-- =============================================================================
 -- TEMPORAL QUERIES - Point-in-time reconstruction
 -- =============================================================================
 
@@ -566,5 +594,6 @@ INSERT INTO projection_checkpoints (projection_name, last_sequence) VALUES
     ('assets', 1),
     ('agreements', 1),
     ('roles', 1),
-    ('workflows', 1);
+    ('workflows', 1),
+    ('workspaces', 1);
 

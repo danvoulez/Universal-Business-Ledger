@@ -538,3 +538,22 @@ export interface RealmConfigUpdated {
   readonly reason: string;
 }
 
+// API Key Events (following ORIGINAL philosophy: everything via events)
+export interface ApiKeyCreated {
+  readonly type: 'ApiKeyCreated';
+  readonly realmId: EntityId;
+  readonly entityId: EntityId;
+  readonly name: string;
+  readonly scopes: readonly string[];
+  readonly keyHash: string; // Hash of the key (not the raw key)
+  readonly expiresAt?: Timestamp;
+  readonly revoked: boolean;
+}
+
+export interface ApiKeyRevoked {
+  readonly type: 'ApiKeyRevoked';
+  readonly apiKeyId: EntityId;
+  readonly revokedAt: Timestamp;
+  readonly reason: string;
+}
+

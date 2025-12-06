@@ -163,23 +163,27 @@ export function createS3CompatibleAdapter(
     async initialize(cfg: AdapterConfig): Promise<void> {
       config = cfg as S3CompatibleConfig;
       
-      if (!config.credentials.accessKeyId || !config.credentials.secretAccessKey) {
-        throw new Error('S3 credentials not provided');
-      }
-      
       // Initialize S3 client
-      s3Client = new S3Client({
-        credentials: {
-          accessKeyId: config.credentials.accessKeyId,
-          secretAccessKey: config.credentials.secretAccessKey,
-          sessionToken: config.credentials.sessionToken,
-        },
+      // If credentials are empty, AWS SDK will use IAM Role (when running on EC2)
+      const s3Config: any = {
         region: config.options.region ?? 'us-east-1',
         endpoint: config.options.endpoint,
         forcePathStyle: config.options.forcePathStyle,
-      });
+      };
       
-      console.log(`S3-compatible adapter initialized for bucket: ${config.options.bucket}`);
+      // Only set credentials if they are provided (non-empty)
+      if (config.credentials.accessKeyId && config.credentials.secretAccessKey) {
+        s3Config.credentials = {
+          accessKeyId: config.credentials.accessKeyId,
+          secretAccessKey: config.credentials.secretAccessKey,
+          sessionToken: config.credentials.sessionToken,
+        };
+      }
+      // Otherwise, AWS SDK will automatically use IAM Role credentials when running on EC2
+      
+      s3Client = new S3Client(s3Config);
+      
+      console.log(`S3-compatible adapter initialized for bucket: ${config.options.bucket}${s3Config.credentials ? ' (with explicit credentials)' : ' (using IAM Role)'}`);
     },
     
     async healthCheck(): Promise<AdapterHealth> {

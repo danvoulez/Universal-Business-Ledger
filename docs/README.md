@@ -1,45 +1,40 @@
-# 📚 Documentação
+# 📚 Documentação - Universal Business Ledger (Dezembro)
 
-## Estrutura
+Documentação técnica do sistema UBL.
 
-```
-docs/
-├── README.md (este arquivo)
-├── DEPLOY.md (guia rápido de deploy)
-├── deployment/ (guias detalhados de deploy)
-│   ├── DEPLOY_RAILWAY_SIMPLES.md
-│   ├── RENDER_DEPLOY.md
-│   ├── ALTERNATIVAS_DEPLOY.md
-│   └── ...
-├── CHECKLIST.md
-├── FINAL_CHECKLIST.md
-├── FIXES_SUMMARY.md
-├── AGENT_SYSTEM_PROMPT.md
-├── SYSTEM_PROMPT_VERIFICATION.md
-├── CHAT_WEBSOCKET.md
-├── REALTIME.md
-└── ENV_VARIABLES.md
-```
+---
 
-## Guias Principais
+## 📁 Estrutura
 
-- **[Deploy](./DEPLOY.md)** - Guia rápido de deploy
-- **[Arquitetura](../ARCHITECTURE.md)** - Arquitetura do sistema
-- **[Filosofia](../PHILOSOPHY.md)** - Fundamentos filosóficos
+### **Implementação**
+- `PLANO-IMPLEMENTACAO-WORKSPACES.md` - Plano completo de implementação de workspaces
 
-## Deploy
+### **Consolidação**
+- `ANALISE-COMPLETA.md` - Análise comparativa ORIGINAL vs DETURPADO
+- `CONSOLIDACAO-COMPLETA.md` - Plano de consolidação
+- `CONSOLIDACAO-UBL.md` - Consolidação UBL
+- `DOCS-TRANSFERIDOS.md` - Documentação transferida
+- `REFERENCIA-FILOSOFIA.md` - Referência à filosofia original
+- `STATUS-DETURPADO.md` - Status da versão DETURPADO
 
-Ver `docs/deployment/` para guias detalhados de cada plataforma.
+### **Correções**
+- `CORRECOES-APLICADAS.md` - Correções aplicadas
+- `CORRECOES-COMPLETAS.md` - Resumo completo de correções
+- `CORRECOES-FILOSOFIA-ORIGINAL.md` - Correções alinhadas com filosofia original
+- `DESVIOS-ENCONTRADOS.md` - Desvios identificados
+- `DESVIOS-FILOSOFIA.md` - Framework para identificar desvios
+- `STATUS-CORRECOES-FILOSOFIA.md` - Status das correções filosóficas
 
-## Desenvolvimento
+### **Workspaces**
+- `STATUS-PLANO-IMPLEMENTACAO.md` - Status do plano de implementação
+- `RESUMO-IMPLEMENTACAO-WORKSPACES.md` - Resumo executivo da implementação
 
-- **Variáveis de Ambiente:** `ENV_VARIABLES.md`
-- **WebSocket/Real-time:** `REALTIME.md`, `CHAT_WEBSOCKET.md`
-- **Agent:** `AGENT_SYSTEM_PROMPT.md`
+---
 
-## Checklists
+## 📖 Documentos Principais do Sistema
 
-- **Checklist Geral:** `CHECKLIST.md`
-- **Checklist Final:** `FINAL_CHECKLIST.md`
-- **Fixes:** `FIXES_SUMMARY.md`
+Para entender o sistema:
+1. `../PHILOSOPHY.md` - Filosofia do UBL
+2. `../ARCHITECTURE.md` - Arquitetura do sistema
+3. `../README.md` - Visão geral
 

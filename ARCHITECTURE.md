@@ -108,6 +108,8 @@ core/
 │
 ├── store/                  # ← PERSISTENCE
 │   ├── event-store.ts     #    In-memory (dev) event store
+│   ├── postgres-event-store.ts # PostgreSQL implementation
+│   ├── create-event-store.ts   # Factory (auto-selects PostgreSQL or in-memory)
 │   └── postgres-schema.sql#    Production PostgreSQL schema
 │
 ├── engine/                 # ← EXECUTION
@@ -119,13 +121,17 @@ core/
 │
 ├── api/                    # ← INTERFACE LAYER
 │   ├── intent-api.ts      #    Intent-driven API
+│   ├── intent-handlers/    #    Intent handler implementations
+│   │   ├── asset-intents.ts
+│   │   └── workspace-intents.ts
 │   ├── http-server.ts     #    HTTP gateway
 │   ├── query-language.ts  #    Declarative query builder
 │   └── realtime.ts        #    WebSocket & SSE streaming
 │
 ├── security/               # ← AUTHORIZATION
 │   ├── authorization.ts   #    Agreement-Based Access Control
-│   ├── policies.ts        #    Policy engine
+│   ├── authentication.ts  #    JWT, API keys, session management
+│   ├── policies.ts         #    Policy engine
 │   └── audit-integration.ts#   Security → Memory integration
 │
 ├── memory/                 # ← SYSTEM MEMORY
@@ -137,11 +143,23 @@ core/
 │   ├── conversation.ts    #    Chat session management
 │   └── api.ts             #    Agent API for frontend
 │
+├── sandbox/                # ← WORKSPACE SYSTEM (DETURPADO addition)
+│   ├── workspace.ts       #    Workspace management
+│   ├── storage.ts         #    File storage (S3 adapter)
+│   └── runtimes/          #    Code execution runtimes
+│       ├── nodejs.ts
+│       └── registry.ts
+│
+├── trajectory/             # ← AUDIT TRAIL (DETURPADO addition)
+│   ├── trace.ts           #    Trace tracking
+│   ├── path.ts            #    Path reconstruction
+│   └── logger.ts          #    Trajectory logging
+│
 ├── evolution/              # ← SCHEMA EVOLUTION
 │   └── versioning.ts      #    Upcasting, migrations, deprecation
 │
 ├── performance/            # ← OPTIMIZATION
-│   └── snapshots.ts       #    Snapshots, projections, caching
+│   └── snapshots.ts      #    Snapshots, projections, caching
 │
 ├── distributed/            # ← DISTRIBUTED OPERATIONS
 │   └── saga.ts            #    Sagas, cross-realm, conflicts
@@ -159,7 +177,8 @@ core/
 │   └── metrics.ts         #    Counters, tracing, alerts
 │
 ├── operational/            # ← PRODUCTION CONTROLS
-│   └── governance.ts      #    Rate limits, quotas, archival
+│   ├── governance.ts      #    Rate limits, quotas, archival
+│   └── rate-limiter-redis.ts # Redis-based rate limiting
 │
 ├── templates/              # ← REUSABLE PATTERNS
 │   └── registry.ts        #    Agreement & workflow templates
@@ -170,7 +189,27 @@ core/
 ├── testing/                # ← TEST UTILITIES
 │   └── harness.ts         #    Time-travel, fixtures, properties
 │
+├── adapters/               # ← PLATFORM ADAPTERS (DETURPADO addition)
+│   ├── standards/         #    Standard protocols
+│   │   ├── s3.ts          #    AWS S3 storage
+│   │   ├── cloudevents.ts#    CloudEvents format
+│   │   ├── graphql.ts     #    GraphQL schema generation
+│   │   └── ...
+│   └── ...                #    Platform-specific adapters
+│
 └── index.ts               # ← UNIFIED EXPORTS
+
+antenna/                   # ← HTTP SERVER (DETURPADO addition)
+├── server.ts              #    Main HTTP server
+├── admin.ts               #    Admin API (Event Store-based)
+├── agent/                 #    Agent endpoints
+└── websocket.ts           #    WebSocket support
+
+sdk/                       # ← TYPESCRIPT SDK (DETURPADO addition)
+└── index.ts               #    Client SDK
+
+workers/                    # ← BACKGROUND WORKERS (DETURPADO addition)
+└── job-processor.ts        #    Job processing
 ```
 
 ### Data Flow
@@ -207,6 +246,7 @@ core/
 │   - parties: [Company:Employer, João:Employee]                              │
 │   - terms: { salary, duties, ... }                                          │
 │   - hash: sha256(previous + this)                                           │
+│   - aggregateVersion: calculated (not hardcoded)                           │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                         ┌───────────┴───────────┐
@@ -364,7 +404,7 @@ import { createUniversalLedger, Ids } from './core';
 const ledger = createUniversalLedger();
 
 // The system is now ready with:
-// - Event store (in-memory for development)
+// - Event store (PostgreSQL if DATABASE_URL set, otherwise in-memory)
 // - Workflow engine with standard workflows
 // - Flow orchestrator for complex processes
 // - Aggregate repository for state queries
@@ -379,503 +419,30 @@ For production, use:
 3. **Security Policies** - Configure policies for your domain
 4. **Realm Setup** - Create tenant realms via License Agreements
 
-## Extended Capabilities
-
-### 7. Schema Evolution
-
-Events are immutable, but schemas evolve. We handle this through **upcasting**:
-
-```typescript
-// Old events stay as-is in storage
-// When reading, we transform them to current schema
-
-Upcaster: v1 → v2 → v3 → v4 (current)
-
-// Example: PartyRegistered evolved
-// v1: { name, type }
-// v2: { identity: { name, identifiers }, type }  
-// v3: { identity, partyType }  (renamed 'type')
-// v4: { identity, partyType, establishedBy }
-```
-
-### 8. Performance Optimization
-
-For large event streams, we use **snapshots**:
-
-```
-Events: E₁ ── E₂ ── E₃ ── ··· ── E₁₀₀ ── E₁₀₁ ── ···
-                                    │
-                              Snapshot₁₀₀
-                                    │
-                                    ▼
-              To get current: Load Snapshot₁₀₀ + replay E₁₀₁...
-              Instead of:     Replay E₁...E₁₀₁
-```
-
-**Projections** create read-optimized views for complex queries.
-
-### 9. Distributed Transactions (Sagas)
-
-Multi-step processes use the Saga pattern with compensation:
-
-```
-SAGA: Hire Employee
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ Step 1: Create Agreement    ──▶  (if fails: void agreement)                │
-│ Step 2: Grant Role          ──▶  (if fails: revoke role, void agreement)   │
-│ Step 3: Provision Access    ──▶  (if fails: revoke access, role, agreement)│
-│ Step 4: Start Onboarding    ──▶  Success!                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-If Step 3 fails, Steps 2 and 1 are automatically compensated.
-
-### 10. Scheduling & Deadlines
-
-Time-based triggers are first-class citizens:
-
-```typescript
-// Agreement expiry with reminders
-SCHEDULE_PATTERNS.agreementExpiry(agreementId, expiresAt)
-// Creates:
-// - 30-day reminder
-// - 7-day reminder  
-// - 1-day reminder
-// - Expiration trigger
-
-// Payment deadline with escalation
-SCHEDULE_PATTERNS.paymentDue(agreementId, dueDate, recipientId)
-// Creates:
-// - Due date notification
-// - 1-day overdue: Flag as overdue
-// - 7-day overdue: Escalate to manager
-```
-
-### 11. Documents & Signatures
-
-Agreements often have attached documents:
-
-```typescript
-Document {
-  contentHash: "sha256:abc123...",  // Content-addressed
-  signatures: [
-    {
-      signerId: "ent-joao",
-      algorithm: "Ed25519",
-      purpose: "Consent",
-      timestamp: 1701532800000
-    }
-  ]
-}
-```
-
-Documents are:
-- Immutable (new version = new document)
-- Signed with PKI
-- Versioned
-- Attached to agreements
-
-### 12. Webhooks & Notifications
-
-The ledger notifies external systems:
-
-```typescript
-Webhook {
-  url: "https://external.system/events",
-  filters: { eventTypes: ["AgreementActivated"] },
-  auth: { type: "HMAC", secret: "..." }
-}
-
-// Notifications support multiple channels
-Notification {
-  channel: "Email" | "SMS" | "InApp" | "Slack",
-  template: "agreement-proposed",
-  recipients: ["ent-joao"]
-}
-```
-
-### 13. Observability
-
-Beyond Memory (narrative logging), we have quantitative observability:
-
-```typescript
-// Metrics
-LEDGER_METRICS.events.total        // Counter: total events
-LEDGER_METRICS.api.duration        // Histogram: request latency
-LEDGER_METRICS.workflows.active    // Gauge: active workflows
-
-// Tracing
-Trace {
-  traceId: "abc123",
-  spans: [
-    { operation: "HandleIntent", duration: 45ms },
-    { operation: "Authorize", duration: 3ms },
-    { operation: "AppendEvent", duration: 12ms }
-  ]
-}
-
-// Health
-SystemHealth {
-  status: "Healthy",
-  checks: [
-    { component: "EventStore", status: "Healthy" },
-    { component: "Database", status: "Healthy" },
-    { component: "Projections", status: "Degraded", message: "5 events behind" }
-  ]
-}
-```
-
-### 14. Operational Controls
-
-Production systems need governance:
-
-```typescript
-// Rate Limiting
-RateLimit {
-  scope: { type: "Realm", realmId: "tenant-123" },
-  limit: 1000,
-  window: { amount: 1, unit: "hours" }
-}
-
-// Quotas
-Quota {
-  resource: "Events",
-  limit: 1_000_000,
-  scope: "PerRealm"
-}
-
-// Data Export (GDPR)
-ExportRequest {
-  type: "EntityData",  // All data for one entity
-  format: "JSON",
-  scope: { entityId: "ent-joao" }
-}
-
-// Archival
-ArchivalPolicy {
-  archiveAfter: { amount: 2, unit: "years" },
-  destination: { type: "Glacier", vault: "ledger-archive" }
-}
-```
-
-### 15. Templates
-
-Pre-built patterns make the system practical:
-
-```typescript
-// Standard Employment Agreement template
-const employment = AGREEMENT_TEMPLATES.employment;
-// Variables: position, salary, currency, hoursPerWeek, startDate
-
-// Instantiate
-templateRegistry.instantiate("employment-template", {
-  position: "Software Engineer",
-  salary: 100000,
-  currency: "USD",
-  hoursPerWeek: 40,
-  startDate: "2024-01-15"
-});
-```
-
-### 16. Search
-
-Beyond structured queries, full-text and semantic search:
-
-```typescript
-// Full-text search
-searchEngine.search({
-  query: "software contract",
-  type: "FullText",
-  filters: { agreementTypes: ["Employment", "Service"] },
-  facets: ["status", "agreementType"]
-});
-
-// Semantic search (AI-powered)
-semanticEngine.searchSemantic("agreements about intellectual property");
-
-// Find similar documents
-semanticEngine.findSimilar(documentId);
-```
-
-### 17. Testing Utilities
-
-Event sourcing enables powerful testing:
-
-```typescript
-// Time-travel testing
-harness.setTime(new Date('2024-01-01'));
-harness.advanceTime(30 * 24 * 60 * 60 * 1000); // 30 days
-const stateAtTime = await harness.getStateAt('Agreement', agreementId, sequence);
-
-// Fixtures
-fixtureManager.load('simple-employment');
-// Creates: employer, employee, active agreement, role
-
-// Property tests
-PropertyTest {
-  name: "Aggregate version equals event count",
-  property: async (input) => {
-    // Verify this holds for ANY sequence of events
-  }
-}
-
-// Scenario builder (BDD-style)
-scenario()
-  .given("An active employment agreement")
-  .when("The employee resigns")
-  .then("The agreement transitions to Terminated")
-  .thenEventEmitted("AgreementTerminated")
-  .execute();
-```
-
-## Adapter Layer
-
-The Universal Ledger integrates with external platforms through a standardized adapter layer.
-
-### 18. Platform Adapters
-
-Platform-specific adapters translate between the ledger's universal model and each platform's conventions:
-
-```typescript
-// PAYMENTS - Stripe
-const stripe = createStripeAdapter();
-// PaymentIntent.succeeded → ObligationFulfilled event
-// Customer.created → Entity created
-
-// AI/LLM - Anthropic, OpenAI
-const claude = createAnthropicAdapter();  // Claude models
-const gpt = createOpenAIAdapter();         // GPT-4, GPT-3.5
-const azureAI = createAzureOpenAIAdapter(); // Azure-hosted OpenAI
-
-// IDENTITY - Auth0
-const auth0 = createAuth0Adapter();
-// Auth0 user → Entity + Session events
-// Auth0 roles → Agreement-derived roles
-
-// COMMUNICATION
-const twilio = createTwilioAdapter();   // SMS, Voice, WhatsApp
-const sendgrid = createSendGridAdapter(); // Email
-const slack = createSlackAdapter();       // Team messaging
-
-// DATABASE / EVENT STORE
-const postgres = createPostgresAdapter();  // Production event store
-const supabase = createSupabaseAdapter();  // Supabase (PostgreSQL + extras)
-const neon = createNeonAdapter();          // Serverless PostgreSQL
-```
-
-Each adapter implements a common interface:
-```typescript
-interface Adapter {
-  name: string;
-  version: string;
-  initialize(config: AdapterConfig): Promise<void>;
-  healthCheck(): Promise<AdapterHealth>;
-  shutdown(): Promise<void>;
-}
-```
-
-### 19. Industry Standards
-
-For maximum interoperability, the ledger speaks standard protocols:
-
-```typescript
-// CloudEvents - Universal event format
-const cloudEvent = toCloudEvent(ledgerEvent);
-// Works with: AWS EventBridge, Google Pub/Sub, Kafka, any CloudEvents consumer
-
-// OpenAPI - Self-documenting API
-const spec = generateOpenAPISpec(intentRegistry, templates);
-// Works with: Swagger UI, Postman, code generators
-
-// S3 - Object storage
-const s3 = createS3Adapter({
-  endpoint: "s3.amazonaws.com",  // or MinIO, Backblaze, etc.
-});
-// Content-addressed document storage
-
-// GraphQL - Flexible queries
-const schema = generateGraphQLSchema(aggregateTypes);
-// Query exactly what you need
-
-// gRPC - High-performance RPC
-const proto = generateProtoFile(intentRegistry);
-// Binary protocol for service-to-service
-
-// AMQP - Message queuing (RabbitMQ)
-const amqp = createAMQPAdapter({
-  url: "amqp://localhost"
-});
-// Exchange-based routing for events
-```
-
-### Adapter Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           UNIVERSAL LEDGER                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                         Core Domain Model                            │   │
-│  │              Entities • Agreements • Events • Roles                  │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                        ┌───────────┴───────────┐                           │
-│                        ▼                       ▼                           │
-│  ┌────────────────────────────┐  ┌────────────────────────────────┐       │
-│  │    PLATFORM ADAPTERS       │  │    INDUSTRY STANDARDS          │       │
-│  │                            │  │                                │       │
-│  │  ┌────────┐ ┌────────┐    │  │  ┌─────────────┐ ┌───────────┐ │       │
-│  │  │ Stripe │ │ Auth0  │    │  │  │ CloudEvents │ │  OpenAPI  │ │       │
-│  │  └────────┘ └────────┘    │  │  └─────────────┘ └───────────┘ │       │
-│  │  ┌────────┐ ┌────────┐    │  │  ┌─────────────┐ ┌───────────┐ │       │
-│  │  │ OpenAI │ │Anthropic│   │  │  │     S3      │ │  GraphQL  │ │       │
-│  │  └────────┘ └────────┘    │  │  └─────────────┘ └───────────┘ │       │
-│  │  ┌────────┐ ┌────────┐    │  │  ┌─────────────┐ ┌───────────┐ │       │
-│  │  │ Twilio │ │SendGrid│    │  │  │    gRPC     │ │   AMQP    │ │       │
-│  │  └────────┘ └────────┘    │  │  └─────────────┘ └───────────┘ │       │
-│  │  ┌────────┐ ┌────────┐    │  │                                │       │
-│  │  │ Slack  │ │Postgres│    │  │                                │       │
-│  │  └────────┘ └────────┘    │  │                                │       │
-│  │                            │  │                                │       │
-│  │  "Knows the PLATFORM"      │  │  "Speaks the PROTOCOL"        │       │
-│  └────────────────────────────┘  └────────────────────────────────┘       │
-│                    │                           │                           │
-│                    └────────────┬──────────────┘                           │
-│                                 ▼                                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-                    ┌─────────────────────────┐
-                    │     EXTERNAL WORLD      │
-                    │                         │
-                    │  Payment processors     │
-                    │  Identity providers     │
-                    │  Message brokers        │
-                    │  Cloud services         │
-                    │  Any S3-compatible      │
-                    │  Any gRPC client        │
-                    │  Any GraphQL client     │
-                    └─────────────────────────┘
-```
-
-## Why This Architecture?
-
-### Perfect Auditability
-Every action is recorded with WHO, WHAT, WHEN, WHY, and HOW. You can reconstruct any state at any point in time.
-
-### Legal Compliance
-- Tamper-evident through cryptographic chaining
-- Non-repudiation through actor tracking
-- Complete history through append-only storage
-
-### Universal Flexibility
-The Agreement model can represent ANY business relationship—no special cases, just different agreement types.
-
-### Traceable Security
-Every permission is traceable to its establishing agreement. "Why can John do X?" always has a clear answer.
-
-### System Memory
-Logging isn't a separate concern—it's integral to the system. The ledger IS the audit log.
-
-### Production Ready
-With snapshots, projections, caching, rate limiting, quotas, archival, and observability—the system is designed for real-world scale.
-
-### Developer Experience
-Templates, fixtures, time-travel testing, and property tests make development and maintenance a joy.
-
----
-
-## Complete Conceptual Model
-
-```
-╔═════════════════════════════════════════════════════════════════════════════════╗
-║                          UNIVERSAL LEDGER SYSTEM                                 ║
-║                        Complete Conceptual Architecture                          ║
-╠═════════════════════════════════════════════════════════════════════════════════╣
-║                                                                                  ║
-║  FOUNDATION                                                                      ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │   Events    │  Aggregates │  Workflows  │    Flows    │   Realms    │        ║
-║  │  (Facts)    │   (State)   │  (States)   │ (Processes) │  (Tenants)  │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  DOMAIN MODEL                                                                    ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │  Entities   │   Assets    │ Agreements  │    Roles    │ Permissions │        ║
-║  │  (Actors)   │  (Objects)  │  (Pacts)    │(Relations)  │  (Access)   │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  INTERFACE                                                                       ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │   Intents   │   Queries   │  WebSocket  │     SSE     │    Agent    │        ║
-║  │  (Actions)  │  (Reads)    │  (Realtime) │ (Streaming) │    (AI)     │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  SECURITY & MEMORY                                                               ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │Authorization│  Policies   │   Memory    │   Stories   │   Logging   │        ║
-║  │   (ABAC)    │  (Rules)    │ (Narrative) │  (History)  │  (Trace)    │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  EVOLUTION & PERFORMANCE                                                         ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │  Upcasting  │ Migrations  │  Snapshots  │ Projections │   Caching   │        ║
-║  │ (Versioning)│  (Batch)    │  (Optimize) │  (Views)    │  (Speed)    │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  DISTRIBUTED                                                                     ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │    Sagas    │ Cross-Realm │  Conflicts  │ Scheduling  │  Deadlines  │        ║
-║  │(Compensate) │ (Boundaries)│ (Resolution)│  (Triggers) │ (Reminders) │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  EXTERNAL                                                                        ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │   Webhooks  │Notifications│Integrations │  Documents  │  Signatures │        ║
-║  │  (Events)   │  (Alerts)   │   (APIs)    │  (Files)    │   (PKI)     │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  OPERATIONAL                                                                     ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │   Metrics   │   Tracing   │   Health    │   Alerts    │ Rate Limits │        ║
-║  │ (Numbers)   │   (Path)    │  (Status)   │ (Warnings)  │  (Control)  │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │   Quotas    │   Export    │  Archival   │  Retention  │  Templates  │        ║
-║  │  (Limits)   │   (GDPR)    │  (Storage)  │ (Compliance)│ (Patterns)  │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  SEARCH & TESTING                                                                ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │  Full-Text  │  Semantic   │Time-Travel  │  Fixtures   │  Property   │        ║
-║  │  (Search)   │    (AI)     │  (Testing)  │   (Setup)   │  (Verify)   │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  PLATFORM ADAPTERS                                                               ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │   Stripe    │   Auth0     │   OpenAI    │  Anthropic  │   Twilio    │        ║
-║  │ (Payments)  │ (Identity)  │   (LLM)     │   (LLM)     │   (SMS)     │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │  SendGrid   │   Slack     │  Postgres   │  Supabase   │    Neon     │        ║
-║  │  (Email)    │  (Chat)     │   (DB)      │   (BaaS)    │(Serverless) │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║                                                                                  ║
-║  INDUSTRY STANDARDS                                                              ║
-║  ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐        ║
-║  │ CloudEvents │   OpenAPI   │     S3      │   GraphQL   │    gRPC     │        ║
-║  │  (Events)   │   (REST)    │ (Storage)   │  (Queries)  │   (RPC)     │        ║
-║  └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘        ║
-║  ┌─────────────┐                                                                 ║
-║  │    AMQP     │                                                                 ║
-║  │ (Messaging) │                                                                 ║
-║  └─────────────┘                                                                 ║
-║                                                                                  ║
-╚═════════════════════════════════════════════════════════════════════════════════╝
-```
+## DETURPADO Enhancements
+
+This implementation (DETURPADO) includes additional features while maintaining the core ORIGINAL philosophy:
+
+### Additional Modules:
+- **`antenna/`** - Complete HTTP server with `/intent` endpoint
+- **`core/sandbox/`** - Workspace system for code execution
+- **`core/trajectory/`** - Enhanced audit trail
+- **`core/adapters/`** - Platform adapters (S3, Stripe, Auth0, etc.)
+- **`sdk/`** - TypeScript SDK for client integration
+- **`workers/`** - Background job processing
+
+### Key Corrections Applied:
+- ✅ Aggregate versions calculated dynamically (not hardcoded)
+- ✅ All actors are entities (not "System")
+- ✅ Admin API uses Event Store (not in-memory)
+- ✅ Everything via `/intent` (Intent-Driven)
+- ✅ Consent explicit in Agreement Types
+
+See `PHILOSOPHY.md` for the core philosophical foundation.
 
 ---
 
 *"Agreements are the force that binds entities together. Without them, there are no relationships—only isolated atoms."*
 
 *"The system doesn't just record what happened—it remembers, explains, and evolves."*
+

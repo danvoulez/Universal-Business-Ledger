@@ -348,11 +348,45 @@ export interface HandlerContext extends IntentContext {
   readonly aggregates: unknown; // AggregateRepository
   readonly workflows: unknown; // WorkflowEngine
   readonly agreements: unknown; // AgreementTypeRegistry
+  readonly authorization: unknown; // AuthorizationEngine
+  readonly adapters?: Map<string, unknown>; // Adapter registry
+  readonly runtimeRegistry?: unknown; // RuntimeRegistry
 }
 
 // ============================================================================
 // BUILT-IN INTENTS
 // ============================================================================
+
+// Import workspace intent handlers
+import {
+  handleUploadFile,
+  handleDownloadFile,
+  handleListFiles,
+  handleModifyFile,
+  handleDeleteFile,
+  handleRegisterFunction,
+  handleExecuteFunction,
+  handleExecuteScript,
+  handleCloneRepository,
+  handlePullRepository,
+  handlePushRepository,
+  type UploadFileIntent,
+  type DownloadFileIntent,
+  type ListFilesIntent,
+  type ModifyFileIntent,
+  type DeleteFileIntent,
+  type RegisterFunctionIntent,
+  type ExecuteFunctionIntent,
+  type ExecuteScriptIntent,
+  type CloneRepositoryIntent,
+  type PullRepositoryIntent,
+  type PushRepositoryIntent,
+} from './intent-handlers/workspace-intents';
+
+// Import asset intent handlers
+import {
+  handleRegisterAsset,
+} from './intent-handlers/asset-intents';
 
 export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
   // --- Entity Intents ---
@@ -516,30 +550,28 @@ export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
   // --- Asset Intents ---
   {
     name: 'register-asset',
-    description: 'Register a new asset',
+    description: 'Register a new asset (supports Workspace type)',
     category: 'Asset',
     schema: {
       type: 'object',
       required: ['assetType', 'properties'],
       properties: {
-        assetType: { type: 'string' },
+        assetType: { type: 'string', enum: ['Workspace', 'Document', 'Product', 'Service', 'Other'] },
         ownerId: { type: 'string' },
-        properties: { type: 'object' },
+        properties: { 
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            runtime: { type: 'string', enum: ['Node.js', 'Python', 'Deno', 'WebAssembly', 'Multi'] },
+            resources: { type: 'object' },
+            identity: { type: 'object' },
+          }
+        },
         quantity: { type: 'object' },
       },
     },
     requiredPermissions: ['asset:create'],
-    handler: async (intent, context) => {
-      return {
-        success: true,
-        outcome: { type: 'Created', entity: {}, id: '' as EntityId },
-        events: [],
-        affordances: [
-          { intent: 'transfer', description: 'Transfer this asset', required: ['toEntityId', 'agreementId'] },
-        ],
-        meta: { processedAt: Date.now(), processingTime: 0 },
-      };
-    },
+    handler: handleRegisterAsset,
   },
   
   {
@@ -693,6 +725,276 @@ export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
       };
     },
   },
+  
+  // --- Workspace Intents ---
+  {
+    name: 'upload:file',
+    description: 'Upload a file to a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'file', 'filename', 'path'],
+      properties: {
+        workspaceId: { type: 'string' },
+        file: { type: ['string', 'array'] },
+        filename: { type: 'string' },
+        path: { type: 'string' },
+      },
+    },
+    requiredPermissions: ['Workspace:File:create'],
+    handler: handleUploadFile,
+  },
+  {
+    name: 'download:file',
+    description: 'Download a file from a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'fileId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        fileId: { type: 'string' },
+        version: { type: 'number' },
+      },
+    },
+    requiredPermissions: ['Workspace:File:read'],
+    handler: handleDownloadFile,
+  },
+  {
+    name: 'list:files',
+    description: 'List files in a workspace',
+    category: 'Query',
+    schema: {
+      type: 'object',
+      required: ['workspaceId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        path: { type: 'string' },
+      },
+    },
+    requiredPermissions: ['Workspace:Content:read'],
+    handler: handleListFiles,
+  },
+  {
+    name: 'modify:file',
+    description: 'Modify a file in a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'fileId', 'content'],
+      properties: {
+        workspaceId: { type: 'string' },
+        fileId: { type: 'string' },
+        content: { type: ['string', 'array'] },
+        previousVersionId: { type: 'string' },
+      },
+    },
+    requiredPermissions: ['Workspace:Content:update'],
+    handler: handleModifyFile,
+  },
+  {
+    name: 'delete:file',
+    description: 'Delete a file from a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'fileId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        fileId: { type: 'string' },
+      },
+    },
+    requiredPermissions: ['Workspace:File:delete'],
+    handler: handleDeleteFile,
+  },
+  {
+    name: 'register:function',
+    description: 'Register a function in a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'name', 'code', 'language', 'entryPoint'],
+      properties: {
+        workspaceId: { type: 'string' },
+        name: { type: 'string' },
+        code: { type: 'string' },
+        language: { type: 'string', enum: ['javascript', 'python', 'typescript'] },
+        entryPoint: { type: 'string' },
+      },
+    },
+    requiredPermissions: ['Workspace:Function:create'],
+    handler: handleRegisterFunction,
+  },
+  {
+    name: 'execute:function',
+    description: 'Execute a function in a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'functionId', 'input'],
+      properties: {
+        workspaceId: { type: 'string' },
+        functionId: { type: 'string' },
+        input: { type: 'object' },
+      },
+    },
+    requiredPermissions: ['Workspace:Function:execute'],
+    handler: handleExecuteFunction,
+  },
+  {
+    name: 'execute:script',
+    description: 'Execute a script file in a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'path'],
+      properties: {
+        workspaceId: { type: 'string' },
+        path: { type: 'string' },
+        input: { type: 'object' },
+      },
+    },
+    requiredPermissions: ['Workspace:Script:execute'],
+    handler: handleExecuteScript,
+  },
+  {
+    name: 'clone:repository',
+    description: 'Clone a git repository into a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'url'],
+      properties: {
+        workspaceId: { type: 'string' },
+        url: { type: 'string' },
+        branch: { type: 'string' },
+        depth: { type: 'number' },
+        credentials: {
+          type: 'object',
+          properties: {
+            username: { type: 'string' },
+            password: { type: 'string' },
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    requiredPermissions: ['Workspace:Content:create'],
+    handler: handleCloneRepository,
+  },
+  {
+    name: 'pull:repository',
+    description: 'Pull latest changes from a git repository',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'repositoryId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        repositoryId: { type: 'string' },
+        branch: { type: 'string' },
+        credentials: {
+          type: 'object',
+          properties: {
+            username: { type: 'string' },
+            password: { type: 'string' },
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    requiredPermissions: ['Workspace:Content:update'],
+    handler: handlePullRepository,
+  },
+  {
+    name: 'push:repository',
+    description: 'Push changes to a git repository',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'repositoryId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        repositoryId: { type: 'string' },
+        branch: { type: 'string' },
+        force: { type: 'boolean' },
+        credentials: {
+          type: 'object',
+          properties: {
+            username: { type: 'string' },
+            password: { type: 'string' },
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    requiredPermissions: ['Workspace:Content:update'],
+    handler: handlePushRepository,
+  },
+  
+  // --- Authentication/Authorization Intents ---
+  {
+    name: 'delegate:auth',
+    description: 'Create a realm-scoped API key for delegation (replaces /auth/delegate endpoint)',
+    category: 'Authentication',
+    schema: {
+      type: 'object',
+      required: ['realmId'],
+      properties: {
+        realmId: { type: 'string' },
+        entityId: { type: 'string' },
+        name: { type: 'string' },
+        scopes: { type: 'array', items: { type: 'string' } },
+        expiresInDays: { type: 'number' },
+      },
+    },
+    requiredPermissions: ['admin'], // Requires master key or admin role
+    handler: async (intent, context) => {
+      // This intent creates an API key via Event Store
+      // Implementation uses admin.createApiKey which now uses Event Store
+      const { createApiKey } = await import('../../antenna/admin');
+      const eventStore = context.eventStore as any;
+      
+      if (!eventStore) {
+        return {
+          success: false,
+          outcome: { type: 'Nothing', reason: 'Event store not available' },
+          events: [],
+          affordances: [],
+          errors: [{ code: 'ERROR', message: 'Event store required' }],
+          meta: { processedAt: Date.now(), processingTime: 0 },
+        };
+      }
+      
+      const keyData = await createApiKey({
+        realmId: intent.payload.realmId,
+        entityId: intent.payload.entityId || (intent.actor.type === 'Entity' ? intent.actor.entityId : '' as EntityId),
+        name: intent.payload.name || `Delegated key for ${intent.payload.realmId}`,
+        scopes: intent.payload.scopes || ['read', 'write'],
+        expiresInDays: intent.payload.expiresInDays || 365,
+      }, eventStore);
+      
+      return {
+        success: true,
+        outcome: {
+          type: 'Created',
+          entity: {
+            id: keyData.apiKey.id,
+            realmId: keyData.apiKey.realmId,
+            name: keyData.apiKey.name,
+            scopes: keyData.apiKey.scopes,
+            expiresAt: keyData.apiKey.expiresAt,
+          },
+          id: keyData.apiKey.id,
+        },
+        events: [], // Events created by createApiKey
+        affordances: [
+          { intent: 'revokeApiKey', description: 'Revoke this API key', required: ['keyId'] },
+        ],
+        meta: { processedAt: Date.now(), processingTime: 0 },
+      };
+    },
+  },
 ];
 
 // ============================================================================
@@ -742,4 +1044,184 @@ export const INTENT_ALIASES: Record<string, { intent: string; defaults?: Record<
   'complete': { intent: 'fulfill', defaults: {} },
   'done': { intent: 'fulfill', defaults: {} },
 };
+
+// ============================================================================
+// INTENT REGISTRY IMPLEMENTATION
+// ============================================================================
+
+class SimpleIntentRegistry implements IntentRegistry {
+  private intents: Map<string, IntentDefinition> = new Map();
+
+  register(intentName: string, definition: IntentDefinition): void {
+    this.intents.set(intentName, definition);
+  }
+
+  get(intentName: string): IntentDefinition | undefined {
+    return this.intents.get(intentName);
+  }
+
+  getAll(): readonly IntentDefinition[] {
+    return Array.from(this.intents.values());
+  }
+
+  getForContext(context: IntentContext): readonly IntentDefinition[] {
+    // For now, return all intents. In the future, filter by permissions/context
+    return this.getAll();
+  }
+}
+
+// ============================================================================
+// INTENT HANDLER CREATION
+// ============================================================================
+
+/**
+ * Create an IntentHandler from BUILT_IN_INTENTS
+ */
+export function createIntentHandler(
+  registry?: IntentRegistry,
+  context?: Partial<HandlerContext>
+): IntentHandler {
+  const intentRegistry = registry || (() => {
+    const reg = new SimpleIntentRegistry();
+    // Register all built-in intents
+    for (const intent of BUILT_IN_INTENTS) {
+      reg.register(intent.name, intent);
+    }
+    return reg;
+  })();
+
+  // Create adapters map if not provided
+  const adapters = context?.adapters || new Map<string, unknown>();
+
+  const defaultContext: Partial<HandlerContext> = {
+    realm: 'default-realm' as EntityId,
+    actor: { type: 'Anonymous' },
+    adapters,
+    ...context,
+  };
+
+  return {
+    async handle<T>(intent: Intent<T>): Promise<IntentResult> {
+      const definition = intentRegistry.get(intent.intent);
+      
+      if (!definition) {
+        return {
+          success: false,
+          outcome: {
+            type: 'Nothing',
+            reason: `Intent "${intent.intent}" not found`,
+          },
+          events: [],
+          affordances: [],
+          meta: {
+            processedAt: Date.now(),
+            processingTime: 0,
+          },
+        };
+      }
+
+      try {
+        const handlerContext: HandlerContext = {
+          realm: intent.realm,
+          actor: intent.actor,
+          ...defaultContext,
+          ...context,
+        } as HandlerContext;
+
+        return await definition.handler(intent, handlerContext);
+      } catch (error: any) {
+        return {
+          success: false,
+          outcome: {
+            type: 'Nothing',
+            reason: error.message || 'Intent execution failed',
+          },
+          events: [],
+          affordances: [],
+          meta: {
+            processedAt: Date.now(),
+            processingTime: 0,
+          },
+        };
+      }
+    },
+
+    async getAvailableIntents(
+      realm: EntityId,
+      actor: ActorReference,
+      context?: { targetType?: string; targetId?: EntityId }
+    ): Promise<readonly Affordance[]> {
+      const ctx: IntentContext = {
+        realm,
+        actor,
+        targetType: context?.targetType,
+        targetId: context?.targetId,
+      };
+      
+      const intents = intentRegistry.getForContext(ctx);
+      
+      return intents.map(intent => ({
+        intent: intent.name,
+        description: intent.description,
+        required: Object.keys(intent.schema.properties || {}).filter(
+          key => (intent.schema.required || []).includes(key)
+        ),
+      }));
+    },
+
+    async validate<T>(intent: Intent<T>): Promise<ValidationResult> {
+      const definition = intentRegistry.get(intent.intent);
+      
+      if (!definition) {
+        return {
+          valid: false,
+          errors: [{
+            code: 'INTENT_NOT_FOUND',
+            message: `Intent "${intent.intent}" is not registered`,
+            field: 'intent',
+          }],
+          warnings: [],
+        };
+      }
+
+      // Basic schema validation would go here
+      // For now, just check if intent exists
+      return {
+        valid: true,
+        errors: [],
+        warnings: [],
+      };
+    },
+
+    async explain<T>(intent: Intent<T>): Promise<Explanation> {
+      const definition = intentRegistry.get(intent.intent);
+      
+      if (!definition) {
+        return {
+          description: `Intent "${intent.intent}" is not registered`,
+          steps: [],
+          effects: [],
+          requirements: [],
+        };
+      }
+
+      return {
+        description: definition.description,
+        steps: [
+          'Validate intent payload',
+          'Check permissions',
+          'Execute handler',
+          'Record events',
+        ],
+        effects: [
+          'Events will be recorded',
+          'State may be updated',
+        ],
+        requirements: [
+          `Permissions: ${definition.requiredPermissions.join(', ')}`,
+        ],
+      };
+    },
+  };
+}
 

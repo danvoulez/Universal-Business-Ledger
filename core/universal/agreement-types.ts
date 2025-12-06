@@ -618,6 +618,129 @@ export const CUSTODY_TYPE: AgreementTypeDefinition = {
 // AGREEMENT TYPE REGISTRY
 // ============================================================================
 
+/**
+ * Workspace Membership Agreement - grants access to a workspace
+ */
+export const WORKSPACE_MEMBERSHIP_TYPE: AgreementTypeDefinition = {
+  id: 'workspace-membership',
+  name: 'Workspace Membership',
+  description: 'Grants access to a workspace',
+  version: 1,
+  allowedRealms: 'all',
+  
+  requiredParticipants: [
+    {
+      role: 'WorkspaceOwner',
+      description: 'The owner of the workspace',
+      minCount: 1,
+      maxCount: 1,
+      allowedEntityTypes: ['Person', 'Organization'],
+      requiresConsent: false, // Owner auto-consents when creating workspace (explicit in agreement type)
+      consentMethods: ['Implicit'], // Explicitly allow implicit consent for owner
+    },
+    {
+      role: 'Member',
+      description: 'The entity being granted workspace access',
+      minCount: 1,
+      maxCount: null,
+      allowedEntityTypes: ['Person', 'Organization'],
+      requiresConsent: true,
+    }
+  ],
+  
+  grantsRoles: [
+    {
+      participantRole: 'WorkspaceOwner',
+      roleType: 'WorkspaceOwner',
+      scope: { type: 'Asset', targetId: undefined }, // Will be set to workspace asset ID
+      validity: 'agreement',
+      permissions: [
+        { action: '*', resource: 'Workspace:*' },
+        { action: 'manage', resource: 'Workspace:Members' },
+        { action: 'delete', resource: 'Workspace:*' },
+        { action: 'configure', resource: 'Workspace:*' },
+      ],
+      delegatable: true,
+    },
+    {
+      participantRole: 'Member',
+      roleType: 'WorkspaceMember',
+      scope: { type: 'Asset', targetId: undefined }, // Will be set to workspace asset ID
+      validity: 'agreement',
+      permissions: [
+        { action: 'read', resource: 'Workspace:*' },
+        { action: 'edit', resource: 'Workspace:Content' },
+        { action: 'create', resource: 'Workspace:Resource' },
+        { action: 'execute', resource: 'Workspace:Function' },
+      ],
+      delegatable: false,
+    }
+  ],
+  
+  requiredTerms: [
+    {
+      clauseType: 'workspaceAssetId',
+      required: true,
+      description: 'ID of the workspace asset',
+    }
+  ]
+};
+
+/**
+ * Workspace Execution Agreement - grants permission to execute code in a workspace
+ */
+export const WORKSPACE_EXECUTION_TYPE: AgreementTypeDefinition = {
+  id: 'workspace-execution',
+  name: 'Workspace Execution Agreement',
+  description: 'Grants permission to execute code in a workspace',
+  version: 1,
+  allowedRealms: 'all',
+  
+  requiredParticipants: [
+    {
+      role: 'WorkspaceOwner',
+      description: 'The owner of the workspace',
+      minCount: 1,
+      allowedEntityTypes: ['Person', 'Organization'],
+      requiresConsent: false,
+    },
+    {
+      role: 'Executor',
+      description: 'The entity being granted execution permission',
+      minCount: 1,
+      allowedEntityTypes: ['Person', 'Organization', 'System'],
+      requiresConsent: true,
+    }
+  ],
+  
+  grantsRoles: [
+    {
+      participantRole: 'Executor',
+      roleType: 'WorkspaceExecutor',
+      scope: { type: 'Asset', targetId: undefined }, // Will be set to workspace asset ID
+      validity: 'agreement',
+      permissions: [
+        { action: 'execute', resource: 'Workspace:Function:*' },
+        { action: 'execute', resource: 'Workspace:Script:*' },
+      ],
+      delegatable: false,
+    }
+  ],
+  
+  requiredTerms: [
+    {
+      clauseType: 'workspaceAssetId',
+      required: true,
+      description: 'ID of the workspace asset',
+    },
+    {
+      clauseType: 'resourceQuota',
+      required: true,
+      description: 'Resource quota for execution',
+    }
+  ]
+};
+
 export const BUILT_IN_AGREEMENT_TYPES: readonly AgreementTypeDefinition[] = [
   GENESIS_AGREEMENT_TYPE,
   TENANT_LICENSE_TYPE,
@@ -627,6 +750,8 @@ export const BUILT_IN_AGREEMENT_TYPES: readonly AgreementTypeDefinition[] = [
   TESTIMONY_TYPE,
   AUTHORIZATION_TYPE,
   CUSTODY_TYPE,
+  WORKSPACE_MEMBERSHIP_TYPE,
+  WORKSPACE_EXECUTION_TYPE,
 ];
 
 /**
