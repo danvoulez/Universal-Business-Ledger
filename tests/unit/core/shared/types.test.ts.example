@@ -1,0 +1,180 @@
+/**
+ * UNIT TESTS - Core/Shared Types
+ * 
+ * Testes unitários para primitivos compartilhados:
+ * - Geração de IDs
+ * - Validação de tipos
+ * - Conversões de tempo
+ * - Validação de períodos
+ */
+
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import {
+  Ids,
+  asEntityId,
+  isValidAt,
+  durationToMs,
+  generateId
+} from '../../../core/shared/types';
+import type { EntityId, Validity, Duration } from '../../../core/shared/types';
+
+describe('IDs', () => {
+  describe('Ids.entity()', () => {
+    it('should generate valid entity IDs', () => {
+      const id = Ids.entity();
+      assert(typeof id === 'string');
+      assert(id.length >= 5);
+      // Should be either prefixed format or UUID
+      assert(
+        id.startsWith('ent-') || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id),
+        `ID format invalid: ${id}`
+      );
+    });
+    
+    it('should generate unique IDs', () => {
+      const ids = new Set(Array.from({ length: 1000 }, () => Ids.entity()));
+      assert.equal(ids.size, 1000, 'IDs should be unique');
+    });
+    
+    it('should generate IDs with correct prefix', () => {
+      const id = Ids.entity();
+      // If using prefix format, should start with 'ent-'
+      if (id.includes('-')) {
+        assert(id.startsWith('ent-'), `Entity ID should start with 'ent-': ${id}`);
+      }
+    });
+  });
+  
+  describe('Ids.agreement()', () => {
+    it('should generate valid agreement IDs', () => {
+      const id = Ids.agreement();
+      assert(typeof id === 'string');
+      assert(id.length >= 5);
+    });
+    
+    it('should generate unique agreement IDs', () => {
+      const ids = new Set(Array.from({ length: 100 }, () => Ids.agreement()));
+      assert.equal(ids.size, 100);
+    });
+  });
+  
+  describe('Ids.role()', () => {
+    it('should generate valid role IDs', () => {
+      const id = Ids.role();
+      assert(typeof id === 'string');
+      assert(id.length >= 5);
+    });
+  });
+  
+  describe('asEntityId()', () => {
+    it('should convert string to EntityId', () => {
+      const id = asEntityId('test-id');
+      assert.equal(id, 'test-id');
+      assert(typeof id === 'string');
+    });
+    
+    it('should handle UUID format', () => {
+      const uuid = '550e8400-e29b-41d4-a716-446655440000';
+      const id = asEntityId(uuid);
+      assert.equal(id, uuid);
+    });
+  });
+});
+
+describe('Validity', () => {
+  describe('isValidAt()', () => {
+    it('should return true for time within validity period', () => {
+      const now = Date.now();
+      const validity: Validity = {
+        effectiveFrom: now - 1000,
+        effectiveUntil: now + 1000
+      };
+      
+      assert(isValidAt(validity, now));
+    });
+    
+    it('should return false for time before effectiveFrom', () => {
+      const now = Date.now();
+      const validity: Validity = {
+        effectiveFrom: now + 1000,
+        effectiveUntil: now + 2000
+      };
+      
+      assert(!isValidAt(validity, now));
+    });
+    
+    it('should return false for time after effectiveUntil', () => {
+      const now = Date.now();
+      const validity: Validity = {
+        effectiveFrom: now - 2000,
+        effectiveUntil: now - 1000
+      };
+      
+      assert(!isValidAt(validity, now));
+    });
+    
+    it('should handle null effectiveUntil (indefinite)', () => {
+      const now = Date.now();
+      const validity: Validity = {
+        effectiveFrom: now - 1000,
+        effectiveUntil: null
+      };
+      
+      assert(isValidAt(validity, now));
+      assert(isValidAt(validity, now + 1000000)); // Far future
+    });
+    
+    it('should handle validity starting now', () => {
+      const now = Date.now();
+      const validity: Validity = {
+        effectiveFrom: now,
+        effectiveUntil: null
+      };
+      
+      assert(isValidAt(validity, now));
+    });
+  });
+});
+
+describe('Duration', () => {
+  describe('durationToMs()', () => {
+    it('should convert days to milliseconds', () => {
+      const duration: Duration = { amount: 7, unit: 'days' };
+      const ms = durationToMs(duration);
+      assert.equal(ms, 7 * 24 * 60 * 60 * 1000);
+    });
+    
+    it('should convert hours to milliseconds', () => {
+      const duration: Duration = { amount: 2, unit: 'hours' };
+      const ms = durationToMs(duration);
+      assert.equal(ms, 2 * 60 * 60 * 1000);
+    });
+    
+    it('should convert minutes to milliseconds', () => {
+      const duration: Duration = { amount: 30, unit: 'minutes' };
+      const ms = durationToMs(duration);
+      assert.equal(ms, 30 * 60 * 1000);
+    });
+    
+    it('should convert seconds to milliseconds', () => {
+      const duration: Duration = { amount: 45, unit: 'seconds' };
+      const ms = durationToMs(duration);
+      assert.equal(ms, 45 * 1000);
+    });
+  });
+});
+
+describe('generateId()', () => {
+  it('should generate IDs with custom prefix', () => {
+    const id = generateId('custom');
+    assert(typeof id === 'string');
+    assert(id.length >= 5);
+  });
+  
+  it('should generate unique IDs with same prefix', () => {
+    const ids = new Set(Array.from({ length: 100 }, () => generateId('test')));
+    assert.equal(ids.size, 100);
+  });
+});
+

@@ -61,7 +61,13 @@ export interface ChainVerificationResult {
 export function createHashChain(): HashChain {
   const computeHash = (event: Omit<Event, 'hash'>): Hash => {
     // Canonical JSON: sorted keys, no whitespace
-    const canonical = JSON.stringify(event, Object.keys(event).sort());
+    // Handle BigInt serialization
+    const canonical = JSON.stringify(event, (key, value) => {
+      if (typeof value === 'bigint') {
+        return value.toString();
+      }
+      return value;
+    }, Object.keys(event).sort());
     // In production: use crypto.subtle.digest or node crypto
     return `sha256:${hashString(canonical)}`;
   };

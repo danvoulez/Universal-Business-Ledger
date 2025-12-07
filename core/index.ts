@@ -158,7 +158,7 @@ export type {
 } from './universal/agreement-types';
 
 export {
-  AGREEMENT_TYPES,
+  BUILT_IN_AGREEMENT_TYPES as AGREEMENT_TYPES,
   createAgreementTypeRegistry,
 } from './universal/agreement-types';
 

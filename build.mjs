@@ -1,4 +1,6 @@
 import * as esbuild from 'esbuild';
+import { copyFileSync, mkdirSync } from 'fs';
+import { dirname } from 'path';
 
 console.log('📦 Building Universal Business Ledger...');
 
@@ -88,6 +90,16 @@ await esbuild.build({
     js: '#!/usr/bin/env node\n// Universal Business Ledger - Migration CLI\n'
   }
 });
+
+// Copy SQL schema file to dist
+console.log('📋 Copying SQL schema file...');
+try {
+  mkdirSync('dist/core/store', { recursive: true });
+  copyFileSync('core/store/postgres-schema.sql', 'dist/core/store/postgres-schema.sql');
+  console.log('✅ SQL schema copied');
+} catch (error) {
+  console.warn('⚠️  Could not copy SQL schema file:', error.message);
+}
 
 console.log('✅ Build complete!');
 

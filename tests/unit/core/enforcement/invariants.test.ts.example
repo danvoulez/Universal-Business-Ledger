@@ -1,0 +1,289 @@
+/**
+ * UNIT TESTS - Core/Enforcement Invariants
+ * 
+ * Testes para:
+ * - Hash chain integrity
+ * - Temporal validation
+ * - Aggregate version enforcement
+ * - Business rule invariants
+ */
+
+import { describe, it, before } from 'node:test';
+import assert from 'node:assert';
+import {
+  createHashChain,
+  createTemporalEnforcer,
+  CORE_INVARIANTS
+} from '../../../../core/enforcement/invariants.js';
+import type { Event } from '../../../../core/schema/ledger.js';
+import { Ids } from '../../../../core/shared/types.js';
+
+describe('Hash Chain', () => {
+  let hashChain;
+  
+  before(() => {
+    hashChain = createHashChain();
+  });
+  
+  describe('computeHash()', () => {
+    it('should compute hash for event', () => {
+      const event = {
+        id: Ids.entity(),
+        sequence: 1n,
+        timestamp: Date.now(),
+        type: 'TestEvent',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: { test: 'data' },
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis'
+      };
+      
+      const hash = hashChain.computeHash(event);
+      
+      assert(typeof hash === 'string', 'Hash should be string');
+      assert(hash.startsWith('sha256:'), 'Hash should start with sha256:');
+      assert(hash.length > 20, 'Hash should have sufficient length');
+    });
+    
+    it('should produce same hash for same event', () => {
+      const event = {
+        id: 'test-id',
+        sequence: 1n,
+        timestamp: 1000,
+        type: 'TestEvent',
+        aggregateId: 'agg-1',
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: { test: 'data' },
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis'
+      };
+      
+      const hash1 = hashChain.computeHash(event);
+      const hash2 = hashChain.computeHash(event);
+      
+      assert.equal(hash1, hash2, 'Same event should produce same hash');
+    });
+    
+    it('should produce different hash for different events', () => {
+      const event1 = {
+        id: 'test-id-1',
+        sequence: 1n,
+        timestamp: 1000,
+        type: 'TestEvent',
+        aggregateId: 'agg-1',
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: { test: 'data1' },
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis'
+      };
+      
+      const event2 = {
+        ...event1,
+        payload: { test: 'data2' }
+      };
+      
+      const hash1 = hashChain.computeHash(event1);
+      const hash2 = hashChain.computeHash(event2);
+      
+      assert.notEqual(hash1, hash2, 'Different events should produce different hashes');
+    });
+  });
+  
+  describe('verifyHash()', () => {
+    it('should verify correct hash', () => {
+      const event = {
+        id: Ids.entity(),
+        sequence: 1n,
+        timestamp: Date.now(),
+        type: 'TestEvent',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis'
+      };
+      
+      const hash = hashChain.computeHash(event);
+      const eventWithHash = { ...event, hash };
+      
+      assert(hashChain.verifyHash(eventWithHash), 'Valid hash should verify');
+    });
+    
+    it('should reject incorrect hash', () => {
+      const event = {
+        id: Ids.entity(),
+        sequence: 1n,
+        timestamp: Date.now(),
+        type: 'TestEvent',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis',
+        hash: 'sha256:wronghash'
+      };
+      
+      assert(!hashChain.verifyHash(event), 'Invalid hash should not verify');
+    });
+  });
+  
+  describe('verifyChain()', () => {
+    it('should verify valid chain', () => {
+      const events: Event[] = [];
+      let previousHash = 'genesis';
+      
+      for (let i = 0; i < 5; i++) {
+        const event = {
+          id: Ids.entity(),
+          sequence: BigInt(i + 1),
+          timestamp: Date.now() + i,
+          type: 'TestEvent',
+          aggregateId: Ids.entity(),
+          aggregateType: 'Party',
+          aggregateVersion: i + 1,
+          payload: { index: i },
+          actor: { type: 'System', systemId: 'test' },
+          previousHash
+        };
+        
+        const hash = hashChain.computeHash(event);
+        events.push({ ...event, hash });
+        previousHash = hash;
+      }
+      
+      const result = hashChain.verifyChain(events);
+      assert(result.isValid, 'Valid chain should verify');
+      assert(!result.error, 'Valid chain should have no error');
+    });
+    
+    it('should detect broken chain', () => {
+      const events: Event[] = [];
+      let previousHash = 'genesis';
+      
+      // Create valid chain
+      for (let i = 0; i < 3; i++) {
+        const event = {
+          id: Ids.entity(),
+          sequence: BigInt(i + 1),
+          timestamp: Date.now() + i,
+          type: 'TestEvent',
+          aggregateId: Ids.entity(),
+          aggregateType: 'Party',
+          aggregateVersion: i + 1,
+          payload: {},
+          actor: { type: 'System', systemId: 'test' },
+          previousHash
+        };
+        
+        const hash = hashChain.computeHash(event);
+        events.push({ ...event, hash });
+        previousHash = hash;
+      }
+      
+      // Break the chain
+      events[1] = {
+        ...events[1],
+        previousHash: 'wrong-previous-hash'
+      };
+      
+      const result = hashChain.verifyChain(events);
+      assert(!result.isValid, 'Broken chain should not verify');
+      assert(result.error, 'Broken chain should have error');
+      assert(result.invalidAt, 'Should identify where chain broke');
+    });
+  });
+});
+
+describe('Temporal Enforcer', () => {
+  let enforcer;
+  
+  before(() => {
+    enforcer = createTemporalEnforcer();
+  });
+  
+  describe('validateTemporal()', () => {
+    it('should validate monotonic sequence', () => {
+      const event1: Event = {
+        id: Ids.entity(),
+        sequence: 1n,
+        timestamp: Date.now(),
+        type: 'Test',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis',
+        hash: 'sha256:test1'
+      };
+      
+      const event2: Event = {
+        id: Ids.entity(),
+        sequence: 2n,
+        timestamp: Date.now() + 1,
+        type: 'Test',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 2,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: event1.hash,
+        hash: 'sha256:test2'
+      };
+      
+      const result = enforcer.validateTemporal(event2, event1);
+      assert(result.isValid, 'Monotonic sequence should be valid');
+      assert.equal(result.violations.length, 0);
+    });
+    
+    it('should reject non-monotonic sequence', () => {
+      const event1: Event = {
+        id: Ids.entity(),
+        sequence: 2n,
+        timestamp: Date.now(),
+        type: 'Test',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 1,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: 'genesis',
+        hash: 'sha256:test1'
+      };
+      
+      const event2: Event = {
+        id: Ids.entity(),
+        sequence: 1n, // Wrong: should be > 2
+        timestamp: Date.now() + 1,
+        type: 'Test',
+        aggregateId: Ids.entity(),
+        aggregateType: 'Party',
+        aggregateVersion: 2,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        previousHash: event1.hash,
+        hash: 'sha256:test2'
+      };
+      
+      const result = enforcer.validateTemporal(event2, event1);
+      assert(!result.isValid, 'Non-monotonic sequence should be invalid');
+      assert(result.violations.length > 0);
+      assert(result.violations.some(v => v.type === 'SequenceNotMonotonic'));
+    });
+  });
+});
+
+describe('Core Invariants', () => {
+  it('should have CORE_INVARIANTS defined', () => {
+    assert(CORE_INVARIANTS, 'CORE_INVARIANTS should be defined');
+    assert(Array.isArray(CORE_INVARIANTS), 'CORE_INVARIANTS should be array');
+    assert(CORE_INVARIANTS.length > 0, 'Should have at least one invariant');
+  });
+});
+

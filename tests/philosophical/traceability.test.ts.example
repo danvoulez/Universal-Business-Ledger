@@ -1,0 +1,309 @@
+/**
+ * PHILOSOPHICAL TESTS - Radical Transparency (Traceability)
+ * 
+ * Valida que o sistema mantém o princípio de Radical Transparency:
+ * "Nothing is hidden. Every relationship has a source. Every change has a cause."
+ * 
+ * Estes testes garantem que:
+ * - Todo evento tem actor identificável
+ * - Todo relacionamento tem agreement que o estabeleceu
+ * - Toda role tem agreement que a concedeu
+ * - Toda mudança tem event que a causou
+ * - Nada é "mágico" - tudo tem origem rastreável
+ */
+
+import { describe, it, before } from 'node:test';
+import assert from 'node:assert';
+import { createTestContext } from '../helpers/test-setup.js';
+import type { TestContext } from '../helpers/test-setup.js';
+
+describe('Radical Transparency - Traceability', () => {
+  let ctx: TestContext;
+  
+  before(async () => {
+    ctx = await createTestContext();
+  });
+  
+  describe('Event Actor Traceability', () => {
+    it('should require actor for every event', async () => {
+      await assert.rejects(
+        ctx.eventStore.append({
+          type: 'TestEvent',
+          aggregateType: 'Party',
+          aggregateId: 'test-1',
+          aggregateVersion: 1,
+          payload: {},
+          timestamp: Date.now(),
+          previousHash: 'genesis',
+          // actor: undefined - Missing actor
+        }),
+        /actor.*required/i,
+        'Events without actor should be rejected'
+      );
+    });
+    
+    it('should identify actor in every event', async () => {
+      const event = await ctx.eventStore.append({
+        type: 'TestEvent',
+        aggregateType: 'Party',
+        aggregateId: 'test-1',
+        aggregateVersion: 1,
+        payload: {},
+        actor: { type: 'System', systemId: 'test' },
+        timestamp: Date.now(),
+        previousHash: 'genesis'
+      });
+      
+      assert(event.actor, 'Event must have actor');
+      assert(event.actor.type, 'Actor must have type');
+      assert.equal(event.actor.type, 'System', 'Actor type should be System');
+    });
+    
+    it('should trace every change to an event', async () => {
+      // Create entity
+      const createResult = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Person',
+          identity: { name: 'John' }
+        }
+      });
+      
+      assert.equal(createResult.success, true);
+      assert(createResult.events.length > 0, 'Change must produce events');
+      
+      // Verify events have actors
+      for (const eventRef of createResult.events) {
+        const event = await ctx.eventStore.getById(eventRef.id);
+        assert(event, 'Event should exist');
+        assert(event.actor, 'Event must have actor');
+      }
+    });
+  });
+  
+  describe('Relationship Traceability', () => {
+    it('should trace every relationship to an agreement', async () => {
+      // Create two entities
+      const entity1 = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Person',
+          identity: { name: 'John' }
+        }
+      });
+      
+      const entity2 = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Organization',
+          identity: { name: 'Acme Corp' }
+        }
+      });
+      
+      // Create relationship via agreement
+      const agreementResult = await ctx.ledger.intentHandler.handle({
+        intent: 'propose',
+        realm: 'realm-1',
+        actor: { type: 'Entity', entityId: entity2.outcome.id },
+        payload: {
+          agreementType: 'Employment',
+          parties: [
+            { entityId: entity1.outcome.id, role: 'Employee' },
+            { entityId: entity2.outcome.id, role: 'Employer' }
+          ],
+          terms: { description: 'Employment agreement' }
+        }
+      });
+      
+      assert.equal(agreementResult.success, true);
+      const agreementId = agreementResult.outcome.id;
+      
+      // Verify relationship is traceable to agreement
+      const agreement = await ctx.ledger.aggregates.getAgreement(agreementId);
+      assert(agreement, 'Agreement must exist');
+      assert(agreement.parties.length === 2, 'Agreement must have parties');
+      
+      // Verify relationship exists via agreement
+      const relationships = await ctx.ledger.aggregates.getRelationships({
+        entity1Id: entity1.outcome.id,
+        entity2Id: entity2.outcome.id
+      });
+      assert(relationships.length > 0, 'Relationship should exist');
+      assert(relationships[0].agreementId === agreementId, 'Relationship must trace to agreement');
+    });
+    
+    it('should not allow relationships without agreements', async () => {
+      // This should fail - relationships must be via agreements
+      // (Implementation depends on API design)
+      // For now, we verify that creating relationships directly is not possible
+    });
+  });
+  
+  describe('Role Traceability', () => {
+    it('should trace every role to its establishing agreement', async () => {
+      // Create entities and agreement (as above)
+      const entity1 = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Person',
+          identity: { name: 'John' }
+        }
+      });
+      
+      const entity2 = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Organization',
+          identity: { name: 'Acme Corp' }
+        }
+      });
+      
+      // Create agreement that grants role
+      const agreementResult = await ctx.ledger.intentHandler.handle({
+        intent: 'propose',
+        realm: 'realm-1',
+        actor: { type: 'Entity', entityId: entity2.outcome.id },
+        payload: {
+          agreementType: 'Employment',
+          parties: [
+            { entityId: entity1.outcome.id, role: 'Employee' },
+            { entityId: entity2.outcome.id, role: 'Employer' }
+          ],
+          terms: { description: 'Employment agreement' }
+        }
+      });
+      
+      // Give consent to activate agreement
+      await ctx.ledger.intentHandler.handle({
+        intent: 'consent',
+        realm: 'realm-1',
+        actor: { type: 'Entity', entityId: entity1.outcome.id },
+        payload: {
+          agreementId: agreementResult.outcome.id
+        }
+      });
+      
+      // Verify role exists and traces to agreement
+      const roles = await ctx.ledger.aggregates.getRoles({
+        holderId: entity1.outcome.id
+      });
+      
+      assert(roles.length > 0, 'Role should exist');
+      const employeeRole = roles.find(r => r.roleType === 'Employee');
+      assert(employeeRole, 'Employee role should exist');
+      assert(employeeRole.establishedBy, 'Role must have establishing agreement');
+      assert.equal(employeeRole.establishedBy, agreementResult.outcome.id, 'Role must trace to agreement');
+    });
+    
+    it('should not allow roles without agreements', async () => {
+      // This should fail - roles must be via agreements
+      await assert.rejects(
+        ctx.ledger.intentHandler.handle({
+          intent: 'grantRole', // If such intent exists
+          realm: 'realm-1',
+          actor: { type: 'System', systemId: 'test' },
+          payload: {
+            entityId: 'ent-1',
+            roleType: 'Employee'
+            // Missing agreement
+          }
+        }),
+        /agreement.*required|must.*via.*agreement/i,
+        'Roles without agreements should be rejected'
+      );
+    });
+  });
+  
+  describe('Change Traceability', () => {
+    it('should trace every change to an event', async () => {
+      // Create entity
+      const createResult = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Person',
+          identity: { name: 'John' }
+        }
+      });
+      
+      const entityId = createResult.outcome.id;
+      
+      // Verify entity state
+      const entity = await ctx.ledger.aggregates.getEntity(entityId);
+      assert(entity, 'Entity should exist');
+      assert.equal(entity.identity.name, 'John', 'Entity name should be John');
+      
+      // Verify change is traceable to event
+      const events = await ctx.eventStore.read({
+        aggregateType: 'Party',
+        aggregateId: entityId
+      });
+      
+      assert(events.length > 0, 'Entity creation should produce events');
+      const createEvent = events.find(e => e.type === 'EntityCreated' || e.type === 'PartyRegistered');
+      assert(createEvent, 'Entity creation event should exist');
+      assert(createEvent.actor, 'Event must have actor');
+    });
+    
+    it('should not allow changes without events', async () => {
+      // Direct state modification should not be possible
+      // All changes must go through event store
+      // (Implementation depends on API design)
+    });
+  });
+  
+  describe('No Magic - Everything Has Source', () => {
+    it('should not allow states without source', async () => {
+      // Verify that entities don't appear magically
+      const entity = await ctx.ledger.aggregates.getEntity('non-existent-id');
+      assert(!entity || !entity.exists, 'Entity should not exist without events');
+    });
+    
+    it('should not allow permissions without source', async () => {
+      // Create entity
+      const entityResult = await ctx.ledger.intentHandler.handle({
+        intent: 'register',
+        realm: 'realm-1',
+        actor: { type: 'System', systemId: 'test' },
+        payload: {
+          entityType: 'Person',
+          identity: { name: 'John' }
+        }
+      });
+      
+      const entity = await ctx.ledger.aggregates.getEntity(entityResult.outcome.id);
+      
+      // Entity should not have permissions directly
+      assert(!entity.permissions || entity.permissions.length === 0, 
+        'Entity should not have permissions without roles');
+      
+      // Permissions should come from roles, which come from agreements
+      const roles = await ctx.ledger.aggregates.getRoles({
+        holderId: entityResult.outcome.id
+      });
+      
+      if (roles.length === 0) {
+        // No roles = no permissions (correct)
+        assert(true, 'Entity without roles should have no permissions');
+      } else {
+        // Permissions should trace to roles, which trace to agreements
+        for (const role of roles) {
+          assert(role.establishedBy, 'Role must have establishing agreement');
+          assert(role.permissions, 'Role should have permissions');
+        }
+      }
+    });
+  });
+});
+

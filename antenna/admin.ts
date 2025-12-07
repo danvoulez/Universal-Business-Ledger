@@ -530,8 +530,8 @@ export async function createUser(
   }
   
   // Criar entidade do usuário
-  const entityId = generateId('entity');
-  const userEntity = {
+  let entityId = generateId('entity');
+  let userEntity = {
     id: entityId,
     realmId: realm.id,
     entityType: 'Person',

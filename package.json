@@ -32,7 +32,12 @@
     "migrate": "node dist/cli/migrate.js",
     "migrate:full": "node dist/cli/migrate.js --full-schema",
     "cli": "node dist/cli/ledger.js",
-    "test": "node --test"
+    "test": "node --test --import tsx/esm",
+    "test:philosophical": "node --test --import tsx/esm tests/philosophical/**/*.test.ts",
+    "test:unit": "node --test --import tsx/esm tests/unit/**/*.test.ts",
+    "test:integration": "node --test --import tsx/esm tests/integration/**/*.test.ts",
+    "test:watch": "node --test --watch --import tsx/esm",
+    "test:coverage": "c8 node --test --import tsx/esm"
   },
   "keywords": [
     "event-sourcing",
@@ -66,7 +71,9 @@
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^20.10.0",
+    "c8": "^8.0.1",
     "esbuild": "^0.27.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.0"
   },
   "dependencies": {

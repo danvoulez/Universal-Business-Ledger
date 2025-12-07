@@ -1,0 +1,156 @@
+/**
+ * INTEGRATION TEST - Realm Creation
+ * 
+ * Testa o fluxo completo de criação de realm:
+ * - Criar realm via intent
+ * - Verificar entidades criadas
+ * - Verificar agreement de license
+ * - Verificar API key gerada
+ * - Verificar isolamento de realms
+ */
+
+import { describe, it, before, after } from 'node:test';
+import assert from 'node:assert';
+import { createUniversalLedger } from '../../core/index.js';
+import { createInMemoryEventStore } from '../../core/store/event-store.js';
+import { PRIMORDIAL_REALM_ID } from '../../core/shared/index.js';
+import type { EntityId } from '../../core/shared/types.js';
+
+describe('Realm Creation Integration', () => {
+  let ledger;
+  let eventStore;
+  
+  before(async () => {
+    // Use in-memory store for tests
+    eventStore = createInMemoryEventStore();
+    ledger = createUniversalLedger({ eventStore });
+  });
+  
+  after(async () => {
+    if (eventStore && typeof eventStore.shutdown === 'function') {
+      await eventStore.shutdown();
+    }
+  });
+  
+  it('should create realm with all dependencies', async () => {
+    const realmName = `Test Realm ${Date.now()}`;
+    
+    // Create realm via intent
+    const result = await ledger.intentHandler.handle({
+      intent: 'createRealm',
+      realm: PRIMORDIAL_REALM_ID,
+      actor: { type: 'System', systemId: 'genesis' },
+      payload: { name: realmName }
+    });
+    
+    // Verify success
+    assert.equal(result.success, true, 'Realm creation should succeed');
+    assert.equal(result.outcome.type, 'Created', 'Outcome should be Created');
+    
+    const realmId = result.outcome.id as EntityId;
+    assert(realmId, 'Realm ID should be returned');
+    assert(typeof realmId === 'string', 'Realm ID should be string');
+    assert(realmId.length >= 5, 'Realm ID should have valid length');
+    
+    // Verify realm entity in response
+    if (result.outcome.type === 'Created' && 'entity' in result.outcome) {
+      const realmEntity = result.outcome.entity as any;
+      assert(realmEntity, 'Realm entity should be in response');
+      
+      // Verify API key was generated
+      if (realmEntity.apiKey) {
+        assert(
+          realmEntity.apiKey.startsWith('ubl_'),
+          `API key should start with 'ubl_': ${realmEntity.apiKey}`
+        );
+        assert(realmEntity.apiKey.length > 10, 'API key should have sufficient length');
+      }
+      
+      // Verify entity ID
+      if (realmEntity.entityId) {
+        assert(typeof realmEntity.entityId === 'string', 'Entity ID should be string');
+      }
+    }
+    
+    // Verify events were created
+    const events = await eventStore.read({
+      aggregateType: 'Flow', // Realms use Flow aggregate type
+      aggregateId: realmId
+    });
+    
+    assert(events.length > 0, 'Events should be created for realm');
+    
+    // Verify RealmCreated event exists
+    const realmCreatedEvent = events.find(e => e.type === 'RealmCreated');
+    assert(realmCreatedEvent, 'RealmCreated event should exist');
+    
+    // Verify affordances
+    assert(Array.isArray(result.affordances), 'Affordances should be array');
+    assert(result.affordances.length > 0, 'Should have affordances');
+    
+    // Verify meta
+    assert(result.meta, 'Meta should be present');
+    assert(typeof result.meta.processedAt === 'number', 'processedAt should be timestamp');
+  });
+  
+  it('should create isolated realms', async () => {
+    const realm1Name = `Realm 1 ${Date.now()}`;
+    const realm2Name = `Realm 2 ${Date.now()}`;
+    
+    // Create two realms
+    const result1 = await ledger.intentHandler.handle({
+      intent: 'createRealm',
+      realm: PRIMORDIAL_REALM_ID,
+      actor: { type: 'System', systemId: 'genesis' },
+      payload: { name: realm1Name }
+    });
+    
+    const result2 = await ledger.intentHandler.handle({
+      intent: 'createRealm',
+      realm: PRIMORDIAL_REALM_ID,
+      actor: { type: 'System', systemId: 'genesis' },
+      payload: { name: realm2Name }
+    });
+    
+    assert.equal(result1.success, true);
+    assert.equal(result2.success, true);
+    
+    const realm1Id = result1.outcome.id as EntityId;
+    const realm2Id = result2.outcome.id as EntityId;
+    
+    // Verify realms are different
+    assert.notEqual(realm1Id, realm2Id, 'Realms should have different IDs');
+    
+    // Verify isolation (entities in one realm shouldn't be visible in another)
+    // This would require query implementation
+  });
+  
+  it('should generate unique API keys for each realm', async () => {
+    const results = await Promise.all([
+      ledger.intentHandler.handle({
+        intent: 'createRealm',
+        realm: PRIMORDIAL_REALM_ID,
+        actor: { type: 'System', systemId: 'genesis' },
+        payload: { name: `Realm A ${Date.now()}` }
+      }),
+      ledger.intentHandler.handle({
+        intent: 'createRealm',
+        realm: PRIMORDIAL_REALM_ID,
+        actor: { type: 'System', systemId: 'genesis' },
+        payload: { name: `Realm B ${Date.now()}` }
+      })
+    ]);
+    
+    const apiKeys = results
+      .filter(r => r.success && r.outcome.type === 'Created')
+      .map(r => {
+        const entity = (r.outcome as any).entity;
+        return entity?.apiKey;
+      })
+      .filter(Boolean);
+    
+    assert.equal(apiKeys.length, 2, 'Should have 2 API keys');
+    assert.notEqual(apiKeys[0], apiKeys[1], 'API keys should be unique');
+  });
+});
+

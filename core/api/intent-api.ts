@@ -367,9 +367,6 @@ import {
   handleRegisterFunction,
   handleExecuteFunction,
   handleExecuteScript,
-  handleCloneRepository,
-  handlePullRepository,
-  handlePushRepository,
   type UploadFileIntent,
   type DownloadFileIntent,
   type ListFilesIntent,
@@ -378,9 +375,6 @@ import {
   type RegisterFunctionIntent,
   type ExecuteFunctionIntent,
   type ExecuteScriptIntent,
-  type CloneRepositoryIntent,
-  type PullRepositoryIntent,
-  type PushRepositoryIntent,
 } from './intent-handlers/workspace-intents';
 
 // Import asset intent handlers
@@ -857,80 +851,11 @@ export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
     requiredPermissions: ['Workspace:Script:execute'],
     handler: handleExecuteScript,
   },
-  {
-    name: 'clone:repository',
-    description: 'Clone a git repository into a workspace',
-    category: 'Asset',
-    schema: {
-      type: 'object',
-      required: ['workspaceId', 'url'],
-      properties: {
-        workspaceId: { type: 'string' },
-        url: { type: 'string' },
-        branch: { type: 'string' },
-        depth: { type: 'number' },
-        credentials: {
-          type: 'object',
-          properties: {
-            username: { type: 'string' },
-            password: { type: 'string' },
-            token: { type: 'string' },
-          },
-        },
-      },
-    },
-    requiredPermissions: ['Workspace:Content:create'],
-    handler: handleCloneRepository,
-  },
-  {
-    name: 'pull:repository',
-    description: 'Pull latest changes from a git repository',
-    category: 'Asset',
-    schema: {
-      type: 'object',
-      required: ['workspaceId', 'repositoryId'],
-      properties: {
-        workspaceId: { type: 'string' },
-        repositoryId: { type: 'string' },
-        branch: { type: 'string' },
-        credentials: {
-          type: 'object',
-          properties: {
-            username: { type: 'string' },
-            password: { type: 'string' },
-            token: { type: 'string' },
-          },
-        },
-      },
-    },
-    requiredPermissions: ['Workspace:Content:update'],
-    handler: handlePullRepository,
-  },
-  {
-    name: 'push:repository',
-    description: 'Push changes to a git repository',
-    category: 'Asset',
-    schema: {
-      type: 'object',
-      required: ['workspaceId', 'repositoryId'],
-      properties: {
-        workspaceId: { type: 'string' },
-        repositoryId: { type: 'string' },
-        branch: { type: 'string' },
-        force: { type: 'boolean' },
-        credentials: {
-          type: 'object',
-          properties: {
-            username: { type: 'string' },
-            password: { type: 'string' },
-            token: { type: 'string' },
-          },
-        },
-      },
-    },
-    requiredPermissions: ['Workspace:Content:update'],
-    handler: handlePushRepository,
-  },
+  // Git repository handlers - TODO: Implement
+  // {
+  //   name: 'clone:repository',
+  //   ...
+  // },
   
   // --- Authentication/Authorization Intents ---
   {

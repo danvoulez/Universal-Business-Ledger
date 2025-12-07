@@ -21,19 +21,32 @@ export interface Migration {
 }
 
 // Load schema from SQL file
-const schemaPath = join(__dirname, 'postgres-schema.sql');
-let fullSchema: string | null = null;
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
-try {
-  fullSchema = readFileSync(schemaPath, 'utf-8');
-} catch (e) {
-  // If file doesn't exist in dist, try source
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Try multiple paths (dist, source, process.cwd)
+let fullSchema: string | null = null;
+const possiblePaths = [
+  join(__dirname, 'postgres-schema.sql'), // dist/core/store/
+  join(__dirname, '../../core/store/postgres-schema.sql'), // source
+  join(process.cwd(), 'core/store/postgres-schema.sql'), // from project root
+  join(process.cwd(), 'dist/core/store/postgres-schema.sql'), // dist from root
+];
+
+for (const schemaPath of possiblePaths) {
   try {
-    const sourcePath = join(__dirname, '../../core/store/postgres-schema.sql');
-    fullSchema = readFileSync(sourcePath, 'utf-8');
-  } catch (e2) {
-    console.warn('Could not load postgres-schema.sql');
+    fullSchema = readFileSync(schemaPath, 'utf-8');
+    break;
+  } catch (e) {
+    // Try next path
   }
+}
+
+if (!fullSchema) {
+  console.warn('Could not load postgres-schema.sql from any location');
 }
 
 export const MIGRATIONS: Migration[] = [
