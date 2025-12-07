@@ -128,21 +128,18 @@ async function executeCreateRealmHook(
     agreementId // establishedBy
   );
   
-  // Emit event for realm creation
-  await services.eventStore.append({
-    type: 'RealmCreated',
-    aggregateId: realm.id,
-    aggregateType: 'Flow' as any,
-    aggregateVersion: 1,
-    payload: {
-      type: 'RealmCreated',
-      name: realmName,
-      establishedBy: agreementId,
-      config: realm.config,
-    },
-    actor: { type: 'System', systemId: 'agreement-hooks' } as ActorReference,
-    timestamp: Date.now(),
-  });
+  // Emit event for realm creation using canonical helper
+  const { buildRealmCreatedEvent } = await import('./realm-events');
+  const realmCreatedEvent = buildRealmCreatedEvent(
+    realm.id,
+    realmName,
+    agreementId,
+    realm.config,
+    { type: 'System', systemId: 'agreement-hooks' } as ActorReference,
+    Date.now(),
+    1
+  );
+  await services.eventStore.append(realmCreatedEvent);
   
   console.log(`Realm ${realm.id} created via tenant-license agreement ${agreementId}`);
   

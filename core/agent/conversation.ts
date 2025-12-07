@@ -1,6 +1,8 @@
 /**
  * CONVERSATIONAL AGENT - The Universal Interface
  * 
+ * Núcleo do agente conversacional. Orquestra sessões, turns, affordances e resposta ao usuário.
+ * 
  * This Agent is the bridge between human language and the Universal Ledger.
  * 
  * Architecture:
@@ -19,6 +21,7 @@
 
 import type { EntityId, Timestamp, ActorReference } from '../shared/types';
 import type { Affordance } from '../api/intent-api';
+import type { AgentResponse, UIAffordance, FocusChange, SubscriptionInfo, AgentInterpretation, BreadcrumbItem } from './primitives';
 
 // ============================================================================
 // CONVERSATION TYPES
@@ -52,32 +55,9 @@ export interface MessageContext {
   readonly meta?: Record<string, unknown>;
 }
 
-/**
- * A response from the agent to the user.
- * This is what the frontend renders.
- */
-export interface AgentResponse {
-  /** Unique response ID */
-  readonly id: EntityId;
-  
-  /** The main content - rendered as Markdown */
-  readonly content: MarkdownContent;
-  
-  /** What the user can do next - rendered as buttons/actions */
-  readonly affordances: readonly UIAffordance[];
-  
-  /** Suggestions for what to type next */
-  readonly suggestions?: readonly string[];
-  
-  /** If this response updates the focus */
-  readonly focus?: FocusChange;
-  
-  /** Real-time subscription (if applicable) */
-  readonly subscription?: SubscriptionInfo;
-  
-  /** Response metadata */
-  readonly meta: ResponseMeta;
-}
+// AgentResponse is now imported from primitives.ts above
+// Re-export for backward compatibility
+export type { AgentResponse } from './primitives';
 
 // ============================================================================
 // MARKDOWN CONTENT
@@ -145,79 +125,31 @@ export interface FormField {
 // UI AFFORDANCES
 // ============================================================================
 
-/**
- * Affordances translated to UI elements.
- * The frontend renders these as buttons, menu items, etc.
- */
-export interface UIAffordance {
-  /** The intent to execute when clicked */
-  readonly intent: string;
-  
-  /** Button label */
-  readonly label: string;
-  
-  /** Button tooltip/description */
-  readonly description?: string;
-  
-  /** Visual style hint */
-  readonly style: 'primary' | 'secondary' | 'danger' | 'ghost';
-  
-  /** Icon hint (frontend interprets) */
-  readonly icon?: string;
-  
-  /** Pre-filled data for the intent */
-  readonly prefilled?: Record<string, unknown>;
-  
-  /** Does this need confirmation? */
-  readonly confirm?: {
-    readonly title: string;
-    readonly message: string;
-  };
-  
-  /** Keyboard shortcut hint */
-  readonly shortcut?: string;
-}
+// UIAffordance is now imported from primitives.ts above
+// Re-export for backward compatibility
+export type { UIAffordance } from './primitives';
 
 // ============================================================================
 // FOCUS & NAVIGATION
 // ============================================================================
 
-/**
- * The agent can change what the user is "looking at".
- */
-export interface FocusChange {
-  readonly type: 'entity' | 'list' | 'dashboard' | 'none';
-  readonly entity?: { type: string; id: EntityId; name: string };
-  readonly breadcrumb?: readonly BreadcrumbItem[];
-}
-
-export interface BreadcrumbItem {
-  readonly label: string;
-  readonly entity?: { type: string; id: EntityId };
-}
-
-// ============================================================================
-// SUBSCRIPTIONS (Real-time)
-// ============================================================================
-
-/**
- * If the response includes live data, the frontend should subscribe.
- */
-export interface SubscriptionInfo {
-  /** Subscribe to these event types */
-  readonly eventTypes: readonly string[];
-  
-  /** For this entity (optional) */
-  readonly entityId?: EntityId;
-  
-  /** Debounce updates (ms) */
-  readonly debounceMs?: number;
-}
+// These types are now imported from primitives.ts above
+// Re-export for backward compatibility
+export type { 
+  FocusChange,
+  BreadcrumbItem,
+  SubscriptionInfo,
+  AgentInterpretation,
+} from './primitives';
 
 // ============================================================================
 // RESPONSE METADATA
 // ============================================================================
 
+/**
+ * Response metadata (extended version for conversation.ts internal use).
+ * The canonical meta structure is in AgentResponse from primitives.ts.
+ */
 export interface ResponseMeta {
   /** When the agent responded */
   readonly timestamp: Timestamp;
@@ -233,20 +165,6 @@ export interface ResponseMeta {
   
   /** Was this from cache? */
   readonly cached?: boolean;
-}
-
-export interface AgentInterpretation {
-  /** What intent the agent detected */
-  readonly intent: string;
-  
-  /** Confidence level */
-  readonly confidence: number;
-  
-  /** Extracted entities */
-  readonly entities?: Record<string, unknown>;
-  
-  /** Alternative interpretations */
-  readonly alternatives?: readonly string[];
 }
 
 // ============================================================================
@@ -275,7 +193,7 @@ export interface ConversationSession {
 
 export interface ConversationTurn {
   readonly user: UserMessage;
-  readonly agent: AgentResponse;
+  readonly agent: AgentResponse; // From primitives.ts
   readonly timestamp: Timestamp;
 }
 

@@ -9,11 +9,12 @@
  * Runs as a background worker on Render.
  */
 
-import { createInMemoryEventStore } from '../core/store/event-store';
+import { createEventStore } from '../core/store/create-event-store';
+import { getConfig } from '../core/config/index.js';
 import type { EntityId } from '../core/shared/types';
 
-// TODO: Replace with actual Postgres adapter when implemented
-const eventStore = createInMemoryEventStore();
+// Use PostgreSQL if DATABASE_URL is set, otherwise in-memory (for development)
+const eventStore = createEventStore();
 
 interface Job {
   id: EntityId;

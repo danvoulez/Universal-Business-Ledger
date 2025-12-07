@@ -19,10 +19,13 @@
 import type { EntityId, ActorReference } from '../shared/types';
 import type { 
   UserMessage, 
-  AgentResponse, 
   ConversationSession,
   ConversationalAgent,
 } from './conversation';
+import type { 
+  ChatResponse,
+  AgentResponse,
+} from './primitives';
 
 // ============================================================================
 // HTTP API TYPES
@@ -46,13 +49,9 @@ export interface ChatRequest {
   };
 }
 
-export interface ChatResponse {
-  /** The agent's response */
-  response: AgentResponse;
-  
-  /** Session ID (for subsequent requests) */
-  sessionId: EntityId;
-}
+// ChatResponse is now defined in primitives.ts (canonical source)
+// Re-exported here for backward compatibility
+export type { ChatResponse } from './primitives';
 
 /**
  * POST /session/start
@@ -125,6 +124,10 @@ export interface AgentAPIRouter {
   getSuggestions(request: SuggestionsRequest): Promise<SuggestionsResponse>;
 }
 
+/**
+ * Ponto de entrada principal da API de chat.
+ * Não contém lógica de domínio; apenas traduz HTTP ↔ core ConversationalAgent.
+ */
 export function createAgentAPIRouter(agent: ConversationalAgent): AgentAPIRouter {
   return {
     async chat(request: ChatRequest): Promise<ChatResponse> {
@@ -139,6 +142,7 @@ export function createAgentAPIRouter(agent: ConversationalAgent): AgentAPIRouter
         sessionId = session.id;
       }
       
+      // ⚠️ CONTRACT: Either sessionId or startSession MUST be provided
       if (!sessionId) {
         throw new Error('Session ID required. Start a session first or provide startSession.');
       }

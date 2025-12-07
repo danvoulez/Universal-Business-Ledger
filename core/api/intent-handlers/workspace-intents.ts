@@ -1125,3 +1125,372 @@ function calculateHash(content: Uint8Array): Hash {
   return createHash('sha256').update(content).digest('hex') as Hash;
 }
 
+// ============================================================================
+// GIT OPERATIONS INTENTS
+// ============================================================================
+
+export interface CloneRepositoryIntent {
+  workspaceId: EntityId;
+  repositoryUrl: string;
+  targetPath?: string;
+  branch?: string;
+  credentials?: {
+    username?: string;
+    password?: string;
+    token?: string;
+  };
+}
+
+export async function handleCloneRepository(
+  intent: Intent<CloneRepositoryIntent>,
+  context: HandlerContext
+): Promise<IntentResult> {
+  const startTime = Date.now();
+  
+  try {
+    // 1. Verificar permissão
+    const authorization = context.authorization as any;
+    const auth = await authorization.authorize({
+      actor: intent.actor,
+      action: { type: 'create' as const },
+      resource: { type: 'Workspace' as const, id: intent.payload.workspaceId },
+      context: {
+        realm: intent.realm,
+        timestamp: Date.now(),
+        correlationId: intent.idempotencyKey || ('' as EntityId),
+      }
+    });
+    
+    if (!auth.allowed) {
+      return {
+        success: false,
+        outcome: { type: 'Nothing', reason: auth.reason || 'Unauthorized' },
+        events: [],
+        affordances: [],
+        errors: [{ code: 'UNAUTHORIZED', message: auth.reason || 'Insufficient permissions' }],
+        meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+      };
+    }
+    
+    // 2. Obter Git adapter
+    const gitAdapter = context.adapters?.get('Git') as GitAdapter | undefined;
+    if (!gitAdapter) {
+      throw new Error('Git adapter not configured');
+    }
+    
+    // 3. Preparar credenciais se fornecidas
+    const credentials = intent.payload.credentials ? {
+      username: intent.payload.credentials.username,
+      password: intent.payload.credentials.password || intent.payload.credentials.token,
+    } : undefined;
+    
+    // 4. Executar clone
+    const cloneResult = await gitAdapter.clone(
+      intent.payload.repositoryUrl,
+      intent.payload.targetPath || `/workspace/${intent.payload.workspaceId}/repo`,
+      {
+        branch: intent.payload.branch,
+        credentials,
+      }
+    );
+    
+    // 5. Criar evento RepositoryCloned
+    const eventStore = context.eventStore as any;
+    const repositoryId = generateId('repo');
+    const latestEvent = await eventStore.getLatest('Repository' as any, repositoryId);
+    const nextAggregateVersion = latestEvent ? latestEvent.aggregateVersion + 1 : 1;
+    
+    const event = await eventStore.append({
+      type: 'RepositoryCloned',
+      aggregateType: 'Repository' as any,
+      aggregateId: repositoryId,
+      aggregateVersion: nextAggregateVersion,
+      actor: intent.actor,
+      timestamp: Date.now(),
+      payload: {
+        workspaceId: intent.payload.workspaceId,
+        repositoryId,
+        repositoryUrl: intent.payload.repositoryUrl,
+        targetPath: cloneResult.path,
+        branch: cloneResult.branch || intent.payload.branch || 'main',
+        clonedBy: intent.actor,
+      }
+    });
+    
+    return {
+      success: true,
+      outcome: {
+        type: 'Created',
+        entity: {
+          id: repositoryId,
+          repositoryUrl: intent.payload.repositoryUrl,
+          path: cloneResult.path,
+          branch: cloneResult.branch,
+        },
+        id: repositoryId
+      },
+      events: [event],
+      affordances: [
+        { intent: 'pull:repository', description: 'Pull latest changes', required: ['workspaceId', 'repositoryId'] },
+        { intent: 'push:repository', description: 'Push changes', required: ['workspaceId', 'repositoryId'] },
+      ],
+      meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      outcome: { type: 'Nothing', reason: error.message },
+      events: [],
+      affordances: [],
+      errors: [{ code: 'ERROR', message: error.message }],
+      meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+    };
+  }
+}
+
+export interface PullRepositoryIntent {
+  workspaceId: EntityId;
+  repositoryId: EntityId;
+  branch?: string;
+  credentials?: {
+    username?: string;
+    password?: string;
+    token?: string;
+  };
+}
+
+export async function handlePullRepository(
+  intent: Intent<PullRepositoryIntent>,
+  context: HandlerContext
+): Promise<IntentResult> {
+  const startTime = Date.now();
+  
+  try {
+    // 1. Verificar permissão
+    const authorization = context.authorization as any;
+    const auth = await authorization.authorize({
+      actor: intent.actor,
+      action: { type: 'read' as const },
+      resource: { type: 'Workspace' as const, id: intent.payload.workspaceId },
+      context: {
+        realm: intent.realm,
+        timestamp: Date.now(),
+        correlationId: intent.idempotencyKey || ('' as EntityId),
+      }
+    });
+    
+    if (!auth.allowed) {
+      return {
+        success: false,
+        outcome: { type: 'Nothing', reason: auth.reason || 'Unauthorized' },
+        events: [],
+        affordances: [],
+        errors: [{ code: 'UNAUTHORIZED', message: auth.reason || 'Insufficient permissions' }],
+        meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+      };
+    }
+    
+    // 2. Obter informações do repositório
+    const eventStore = context.eventStore as any;
+    let repositoryPath = '';
+    let repositoryUrl = '';
+    
+    for await (const event of eventStore.getByAggregate('Repository' as any, intent.payload.repositoryId)) {
+      if (event.type === 'RepositoryCloned') {
+        const payload = event.payload as any;
+        repositoryPath = payload.targetPath || payload.path || '';
+        repositoryUrl = payload.repositoryUrl || '';
+        break;
+      }
+    }
+    
+    if (!repositoryPath) {
+      throw new Error(`Repository ${intent.payload.repositoryId} not found`);
+    }
+    
+    // 3. Obter Git adapter
+    const gitAdapter = context.adapters?.get('Git') as GitAdapter | undefined;
+    if (!gitAdapter) {
+      throw new Error('Git adapter not configured');
+    }
+    
+    // 4. Preparar credenciais se fornecidas
+    const credentials = intent.payload.credentials ? {
+      username: intent.payload.credentials.username,
+      password: intent.payload.credentials.password || intent.payload.credentials.token,
+    } : undefined;
+    
+    // 5. Executar pull
+    const pullResult = await gitAdapter.pull(repositoryPath, {
+      branch: intent.payload.branch,
+      credentials,
+    });
+    
+    // 6. Criar evento RepositoryPulled
+    const latestEvent = await eventStore.getLatest('Repository' as any, intent.payload.repositoryId);
+    const nextAggregateVersion = latestEvent ? latestEvent.aggregateVersion + 1 : 1;
+    
+    const event = await eventStore.append({
+      type: 'RepositoryPulled',
+      aggregateType: 'Repository' as any,
+      aggregateId: intent.payload.repositoryId,
+      aggregateVersion: nextAggregateVersion,
+      actor: intent.actor,
+      timestamp: Date.now(),
+      payload: {
+        workspaceId: intent.payload.workspaceId,
+        repositoryId: intent.payload.repositoryId,
+        branch: pullResult.branch || intent.payload.branch || 'main',
+        changes: pullResult.changes || [],
+        pulledBy: intent.actor,
+      }
+    });
+    
+    return {
+      success: true,
+      outcome: {
+        type: 'Updated',
+        entity: { id: intent.payload.repositoryId, branch: pullResult.branch },
+        changes: ['branch', 'commits']
+      },
+      events: [event],
+      affordances: [
+        { intent: 'push:repository', description: 'Push changes', required: ['workspaceId', 'repositoryId'] },
+      ],
+      meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      outcome: { type: 'Nothing', reason: error.message },
+      events: [],
+      affordances: [],
+      errors: [{ code: 'ERROR', message: error.message }],
+      meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+    };
+  }
+}
+
+export interface PushRepositoryIntent {
+  workspaceId: EntityId;
+  repositoryId: EntityId;
+  branch?: string;
+  message?: string;
+  credentials?: {
+    username?: string;
+    password?: string;
+    token?: string;
+  };
+}
+
+export async function handlePushRepository(
+  intent: Intent<PushRepositoryIntent>,
+  context: HandlerContext
+): Promise<IntentResult> {
+  const startTime = Date.now();
+  
+  try {
+    // 1. Verificar permissão
+    const authorization = context.authorization as any;
+    const auth = await authorization.authorize({
+      actor: intent.actor,
+      action: { type: 'update' as const },
+      resource: { type: 'Workspace' as const, id: intent.payload.workspaceId },
+      context: {
+        realm: intent.realm,
+        timestamp: Date.now(),
+        correlationId: intent.idempotencyKey || ('' as EntityId),
+      }
+    });
+    
+    if (!auth.allowed) {
+      return {
+        success: false,
+        outcome: { type: 'Nothing', reason: auth.reason || 'Unauthorized' },
+        events: [],
+        affordances: [],
+        errors: [{ code: 'UNAUTHORIZED', message: auth.reason || 'Insufficient permissions' }],
+        meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+      };
+    }
+    
+    // 2. Obter informações do repositório
+    const eventStore = context.eventStore as any;
+    let repositoryPath = '';
+    let repositoryUrl = '';
+    
+    for await (const event of eventStore.getByAggregate('Repository' as any, intent.payload.repositoryId)) {
+      if (event.type === 'RepositoryCloned') {
+        const payload = event.payload as any;
+        repositoryPath = payload.targetPath || payload.path || '';
+        repositoryUrl = payload.repositoryUrl || '';
+        break;
+      }
+    }
+    
+    if (!repositoryPath) {
+      throw new Error(`Repository ${intent.payload.repositoryId} not found`);
+    }
+    
+    // 3. Obter Git adapter
+    const gitAdapter = context.adapters?.get('Git') as GitAdapter | undefined;
+    if (!gitAdapter) {
+      throw new Error('Git adapter not configured');
+    }
+    
+    // 4. Preparar credenciais se fornecidas
+    const credentials = intent.payload.credentials ? {
+      username: intent.payload.credentials.username,
+      password: intent.payload.credentials.password || intent.payload.credentials.token,
+    } : undefined;
+    
+    // 5. Executar push
+    const pushResult = await gitAdapter.push(repositoryPath, {
+      branch: intent.payload.branch,
+      message: intent.payload.message,
+      credentials,
+    });
+    
+    // 6. Criar evento RepositoryPushed
+    const latestEvent = await eventStore.getLatest('Repository' as any, intent.payload.repositoryId);
+    const nextAggregateVersion = latestEvent ? latestEvent.aggregateVersion + 1 : 1;
+    
+    const event = await eventStore.append({
+      type: 'RepositoryPushed',
+      aggregateType: 'Repository' as any,
+      aggregateId: intent.payload.repositoryId,
+      aggregateVersion: nextAggregateVersion,
+      actor: intent.actor,
+      timestamp: Date.now(),
+      payload: {
+        workspaceId: intent.payload.workspaceId,
+        repositoryId: intent.payload.repositoryId,
+        branch: pushResult.branch || intent.payload.branch || 'main',
+        commits: pushResult.commits || [],
+        pushedBy: intent.actor,
+      }
+    });
+    
+    return {
+      success: true,
+      outcome: {
+        type: 'Updated',
+        entity: { id: intent.payload.repositoryId, branch: pushResult.branch },
+        changes: ['commits', 'remote']
+      },
+      events: [event],
+      affordances: [],
+      meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      outcome: { type: 'Nothing', reason: error.message },
+      events: [],
+      affordances: [],
+      errors: [{ code: 'ERROR', message: error.message }],
+      meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+    };
+  }
+}
+

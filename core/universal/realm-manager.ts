@@ -1,7 +1,11 @@
 /**
  * REALM MANAGER - Multitenancy Engine
  * 
- * Manages the isolation and interaction between realms (tenants).
+ * Fase 5: REALM MANAGER 100% EVENT-STORE
+ * 
+ * ⚠️ SOURCE OF TRUTH: The Event Store is the ONLY source of truth for Realms.
+ * 
+ * This module manages the isolation and interaction between realms (tenants).
  * Each realm is a self-contained universe that can have its own:
  * - Entities
  * - Assets
@@ -11,11 +15,24 @@
  * 
  * Realms are established by Agreements (Tenant License).
  * Cross-realm interactions require explicit agreements.
+ * 
+ * Architecture:
+ * - Event Store is the canonical source of truth
+ * - In-memory Map is ONLY a cache (derived from events)
+ * - All Realm state is reconstructed from events via rebuildRealmFromEvents()
+ * - No Realm exists without a RealmCreated event in the event store
  */
 
-import type { EntityId, Timestamp, Event } from '../schema/ledger';
-import type { Realm, RealmConfig, Entity, Agreement, Asset, Role } from './primitives';
+import type { EntityId, Timestamp, Event, ActorReference } from '../schema/ledger';
+import type { Realm, RealmConfig, Entity, Agreement, Asset, Role, RealmCreated } from './primitives';
+import { 
+  PRIMORDIAL_REALM_ID, 
+  PRIMORDIAL_SYSTEM_ID, 
+  GENESIS_AGREEMENT_ID 
+} from './primitives';
+import { buildRealmCreatedEvent } from './realm-events';
 import type { EventStore } from '../store/event-store';
+import { logger } from '../observability/logger';
 
 // ============================================================================
 // REALM MANAGER INTERFACE
@@ -24,6 +41,7 @@ import type { EventStore } from '../store/event-store';
 export interface RealmManager {
   /**
    * Create the primordial realm and system entity (bootstrap)
+   * Idempotent: if already exists, returns existing state
    */
   bootstrap(): Promise<BootstrapResult>;
   
@@ -38,8 +56,21 @@ export interface RealmManager {
   
   /**
    * Get a realm by ID
+   * Reconstructs from event store if not in cache
    */
   getRealm(realmId: EntityId): Promise<Realm | null>;
+  
+  /**
+   * Get the Primordial Realm
+   * Always reconstructs from event store to ensure consistency
+   */
+  getPrimordialRealm(): Promise<Realm>;
+  
+  /**
+   * Rebuild a Realm from events in the event store
+   * This is the canonical way to reconstruct Realm state
+   */
+  rebuildRealmFromEvents(realmId: EntityId): Promise<Realm | null>;
   
   /**
    * Get all child realms of a parent
@@ -112,16 +143,152 @@ export interface CrossRealmValidation {
 // ============================================================================
 
 export function createRealmManager(eventStore: EventStore): RealmManager {
+  // ⚠️ CACHE ONLY: This Map is ONLY a cache, NOT a source of truth.
+  // All Realm state must be reconstructible from the event store.
+  // If a Realm is not in cache, it will be rebuilt from events.
   const realms = new Map<EntityId, Realm>();
   const entities = new Map<EntityId, Entity>();
   const realmMemberships = new Map<EntityId, Set<EntityId>>(); // entityId -> realmIds
   
-  const PRIMORDIAL_REALM_ID = '00000000-0000-0000-0000-000000000000' as EntityId;
-  const SYSTEM_ENTITY_ID = '00000000-0000-0000-0000-000000000001' as EntityId;
-  const GENESIS_AGREEMENT_ID = '00000000-0000-0000-0000-000000000002' as EntityId;
+  // Use canonical constants from primitives.ts (not local definitions)
+  const SYSTEM_ENTITY_ID = PRIMORDIAL_SYSTEM_ID;
+  
+  // ============================================================================
+  // CANONICAL: Rebuild Realm from Event Store
+  // ============================================================================
+  
+  /**
+   * Rebuild a Realm from events in the event store.
+   * This is the ONLY canonical way to reconstruct Realm state.
+   * 
+   * Rules:
+   * - If no RealmCreated event exists → returns null
+   * - Applies events in chronological order
+   * - Never invents a Realm without a RealmCreated event
+   */
+  async function rebuildRealmFromEvents(realmId: EntityId): Promise<Realm | null> {
+    logger.info('realm.rebuild.start', {
+      component: 'realm-manager',
+      realmId,
+    });
+    
+    try {
+      // Load all events for this realm
+      const events: Event[] = [];
+      for await (const event of eventStore.getByAggregate('Realm', realmId)) {
+        events.push(event);
+      }
+      
+      if (events.length === 0) {
+        logger.info('realm.rebuild.not_found', {
+          component: 'realm-manager',
+          realmId,
+        });
+        return null;
+      }
+      
+      // Find RealmCreated event (must be first)
+      const realmCreatedEvent = events.find(e => e.type === 'RealmCreated');
+      if (!realmCreatedEvent) {
+        logger.warn('realm.rebuild.no_creation_event', {
+          component: 'realm-manager',
+          realmId,
+          eventsCount: events.length,
+        });
+        return null;
+      }
+      
+      // Extract Realm state from RealmCreated event
+      const payload = realmCreatedEvent.payload as RealmCreated;
+      const realm: Realm = {
+        id: realmId,
+        name: payload.name,
+        createdAt: realmCreatedEvent.timestamp,
+        establishedBy: payload.establishedBy,
+        config: payload.config,
+        parentRealmId: payload.parentRealmId,
+      };
+      
+      // Apply subsequent events (e.g., RealmConfigUpdated)
+      for (const event of events) {
+        if (event.type === 'RealmConfigUpdated') {
+          const configPayload = event.payload as any;
+          realm.config = {
+            ...realm.config,
+            ...configPayload.changes,
+          };
+        }
+        // Add other event types as needed
+      }
+      
+      // Update cache (derived from events, not source of truth)
+      realms.set(realmId, realm);
+      
+      logger.info('realm.rebuild.success', {
+        component: 'realm-manager',
+        realmId,
+        eventsCount: events.length,
+      });
+      
+      return realm;
+    } catch (error: any) {
+      logger.error('realm.rebuild.error', {
+        component: 'realm-manager',
+        realmId,
+        errorCode: error?.code || 'UNKNOWN_ERROR',
+        errorMessage: error?.message || String(error),
+      });
+      throw error;
+    }
+  }
   
   return {
     async bootstrap(): Promise<BootstrapResult> {
+      // ⚠️ IDEMPOTENCY: Check if Primordial Realm already exists in event store
+      const existingPrimordial = await rebuildRealmFromEvents(PRIMORDIAL_REALM_ID);
+      if (existingPrimordial) {
+        logger.info('realm.bootstrap.already_exists', {
+          component: 'realm-manager',
+          realmId: PRIMORDIAL_REALM_ID,
+        });
+        
+        // Rebuild system entity and genesis agreement from events if needed
+        // For now, return existing primordial realm
+        return {
+          primordialRealm: existingPrimordial,
+          systemEntity: entities.get(SYSTEM_ENTITY_ID) || {
+            id: SYSTEM_ENTITY_ID,
+            realmId: PRIMORDIAL_REALM_ID,
+            entityType: 'System',
+            createdAt: Date.now(),
+            version: 1,
+            identity: {
+              name: 'System',
+              identifiers: [
+                { scheme: 'system', value: 'primordial', verified: true },
+              ],
+            },
+            meta: { isPrimordial: true },
+          },
+          genesisAgreement: {
+            id: GENESIS_AGREEMENT_ID,
+            realmId: PRIMORDIAL_REALM_ID,
+            agreementType: 'genesis',
+            createdAt: Date.now(),
+            version: 1,
+            status: 'Active',
+            parties: [],
+            terms: { description: 'Genesis Agreement', clauses: [] },
+            validity: { effectiveFrom: Date.now() },
+          },
+        };
+      }
+      
+      logger.info('realm.bootstrap.creating', {
+        component: 'realm-manager',
+        realmId: PRIMORDIAL_REALM_ID,
+      });
+      
       // Create primordial realm
       const primordialRealm: Realm = {
         id: PRIMORDIAL_REALM_ID,
@@ -191,24 +358,24 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
         },
       };
       
-      // Store
+      // ⚠️ EVENT STORE FIRST: Always emit events BEFORE updating cache
+      // The event store is the source of truth, cache is derived
+      
+      // Emit events using canonical helper
+      const realmCreatedEvent = buildRealmCreatedEvent(
+        PRIMORDIAL_REALM_ID,
+        primordialRealm.name,
+        GENESIS_AGREEMENT_ID,
+        primordialRealm.config,
+        { type: 'System', systemId: 'bootstrap' } as ActorReference,
+        Date.now(),
+        1
+      );
+      await eventStore.append(realmCreatedEvent);
+      
+      // Update cache (derived from events, not source of truth)
       realms.set(PRIMORDIAL_REALM_ID, primordialRealm);
       entities.set(SYSTEM_ENTITY_ID, systemEntity);
-      
-      // Emit events
-      await eventStore.append({
-        type: 'RealmCreated',
-        aggregateId: PRIMORDIAL_REALM_ID,
-        aggregateType: 'Flow', // Using Flow as a proxy for Realm
-        aggregateVersion: 1,
-        payload: {
-          type: 'RealmCreated',
-          name: primordialRealm.name,
-          establishedBy: GENESIS_AGREEMENT_ID,
-          config: primordialRealm.config,
-        },
-        actor: { type: 'System', systemId: 'bootstrap' },
-      });
       
       await eventStore.append({
         type: 'EntityCreated',
@@ -267,31 +434,80 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
         config: fullConfig,
       };
       
+      // ⚠️ EVENT STORE FIRST: Always emit events BEFORE updating cache
+      // Use canonical helper to build event
+      const realmCreatedEvent = buildRealmCreatedEvent(
+        realmId,
+        name,
+        licenseAgreementId,
+        fullConfig,
+        { type: 'System', systemId: 'realm-manager' } as ActorReference,
+        Date.now(),
+        1
+      );
+      await eventStore.append(realmCreatedEvent);
+      
+      // Update cache (derived from events, not source of truth)
       realms.set(realmId, realm);
       
-      await eventStore.append({
-        type: 'RealmCreated',
-        aggregateId: realmId,
-        aggregateType: 'Flow',
-        aggregateVersion: 1,
-        payload: {
-          type: 'RealmCreated',
-          name,
-          establishedBy: licenseAgreementId,
-          config: fullConfig,
-        },
-        actor: { type: 'System', systemId: 'realm-manager' },
+      logger.info('realm.created', {
+        component: 'realm-manager',
+        realmId,
+        name,
+        establishedBy: licenseAgreementId,
       });
       
       return realm;
     },
     
     async getRealm(realmId: EntityId): Promise<Realm | null> {
-      return realms.get(realmId) ?? null;
+      // Check cache first (performance optimization)
+      const cached = realms.get(realmId);
+      if (cached) {
+        return cached;
+      }
+      
+      // If not in cache, rebuild from event store (source of truth)
+      return await rebuildRealmFromEvents(realmId);
+    },
+    
+    async getPrimordialRealm(): Promise<Realm> {
+      // Always rebuild from event store to ensure consistency
+      const realm = await rebuildRealmFromEvents(PRIMORDIAL_REALM_ID);
+      if (!realm) {
+        throw new Error('Primordial Realm not found in event store. Run bootstrap() first.');
+      }
+      return realm;
+    },
+    
+    async rebuildRealmFromEvents(realmId: EntityId): Promise<Realm | null> {
+      return await rebuildRealmFromEvents(realmId);
     },
     
     async getChildRealms(parentRealmId: EntityId): Promise<readonly Realm[]> {
-      return Array.from(realms.values()).filter(r => r.parentRealmId === parentRealmId);
+      // Rebuild all realms from event store to ensure we have complete data
+      // This is expensive but ensures consistency
+      // TODO: Optimize with projection if needed
+      const allRealmIds = new Set<EntityId>();
+      
+      // Collect all realm IDs from events
+      for await (const event of eventStore.getByAggregate('Realm', parentRealmId)) {
+        if (event.type === 'RealmCreated') {
+          allRealmIds.add(event.aggregateId);
+        }
+      }
+      
+      // Also check for child realms by scanning all RealmCreated events
+      // This is a simplified approach - in production, use a projection
+      const childRealms: Realm[] = [];
+      for (const realmId of allRealmIds) {
+        const realm = await this.getRealm(realmId);
+        if (realm && realm.parentRealmId === parentRealmId) {
+          childRealms.push(realm);
+        }
+      }
+      
+      return childRealms;
     },
     
     async updateRealmConfig(
@@ -304,17 +520,11 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
         throw new Error(`Realm not found: ${realmId}`);
       }
       
-      const updatedRealm: Realm = {
-        ...realm,
-        config: { ...realm.config, ...changes },
-      };
-      
-      realms.set(realmId, updatedRealm);
-      
+      // ⚠️ EVENT STORE FIRST: Always emit events BEFORE updating cache
       await eventStore.append({
         type: 'RealmConfigUpdated',
         aggregateId: realmId,
-        aggregateType: 'Flow',
+        aggregateType: 'Realm', // ⚠️ CANONICAL: Always "Realm", never "Flow"
         aggregateVersion: 2, // Would need proper versioning
         payload: {
           type: 'RealmConfigUpdated',
@@ -322,6 +532,18 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
           reason: `Updated by agreement ${agreementId}`,
         },
         actor: { type: 'System', systemId: 'realm-manager' },
+      });
+      
+      // Rebuild from events to ensure consistency
+      const updatedRealm = await rebuildRealmFromEvents(realmId);
+      if (!updatedRealm) {
+        throw new Error(`Realm not found after update: ${realmId}`);
+      }
+      
+      logger.info('realm.config.updated', {
+        component: 'realm-manager',
+        realmId,
+        agreementId,
       });
       
       return updatedRealm;
@@ -354,7 +576,8 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
     },
     
     async getRealmContext(realmId: EntityId): Promise<RealmContext> {
-      const realm = realms.get(realmId);
+      // Use getRealm which will rebuild from event store if needed
+      const realm = await this.getRealm(realmId);
       if (!realm) {
         throw new Error(`Realm not found: ${realmId}`);
       }
@@ -421,8 +644,9 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
         return { allowed: true };
       }
       
-      const sourceRealm = realms.get(sourceRealmId);
-      const targetRealm = realms.get(targetRealmId);
+      // Use getRealm which will rebuild from event store if needed
+      const sourceRealm = await this.getRealm(sourceRealmId);
+      const targetRealm = await this.getRealm(targetRealmId);
       
       if (!sourceRealm || !targetRealm) {
         return { allowed: false, reason: 'Realm not found' };
@@ -448,12 +672,12 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
       // Check hierarchical relationship
       if (sourceRealm.config.isolation === 'Hierarchical') {
         // Check if one is ancestor of the other
-        let current: Realm | undefined = targetRealm;
+        let current: Realm | null = targetRealm;
         while (current) {
           if (current.id === sourceRealmId) {
             return { allowed: true }; // Target is descendant of source
           }
-          current = current.parentRealmId ? realms.get(current.parentRealmId) : undefined;
+          current = current.parentRealmId ? await this.getRealm(current.parentRealmId) : null;
         }
         
         current = sourceRealm;
@@ -461,7 +685,7 @@ export function createRealmManager(eventStore: EventStore): RealmManager {
           if (current.id === targetRealmId) {
             return { allowed: true }; // Source is descendant of target
           }
-          current = current.parentRealmId ? realms.get(current.parentRealmId) : undefined;
+          current = current.parentRealmId ? await this.getRealm(current.parentRealmId) : null;
         }
         
         // Not in same hierarchy

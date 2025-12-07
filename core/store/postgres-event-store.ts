@@ -152,7 +152,7 @@ export function createPostgresEventStoreImpl(
               sequence BIGSERIAL UNIQUE NOT NULL,
               timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               event_type TEXT NOT NULL,
-              aggregate_id UUID NOT NULL,
+              aggregate_id TEXT NOT NULL,
               aggregate_type TEXT NOT NULL,
               aggregate_version INT NOT NULL,
               payload JSONB NOT NULL,

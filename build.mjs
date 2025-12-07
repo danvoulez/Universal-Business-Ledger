@@ -91,6 +91,77 @@ await esbuild.build({
   }
 });
 
+// Build the UUID diagnostic CLI
+await esbuild.build({
+  entryPoints: ['cli/diagnostico-uuid.ts'],
+  outfile: 'dist/cli/diagnostico-uuid.js',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  sourcemap: true,
+  packages: 'external',
+  logLevel: 'info',
+});
+
+// Build the DB migrate CLI
+await esbuild.build({
+  entryPoints: ['cli/db-migrate.ts'],
+  outfile: 'dist/cli/db-migrate.js',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  sourcemap: true,
+  packages: 'external',
+  logLevel: 'info',
+  banner: {
+    js: '#!/usr/bin/env node\n// Universal Business Ledger - DB Migrate CLI\n'
+  }
+});
+
+// Build the DB status CLI
+await esbuild.build({
+  entryPoints: ['cli/db-status.ts'],
+  outfile: 'dist/cli/db-status.js',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  sourcemap: true,
+  packages: 'external',
+  logLevel: 'info',
+  banner: {
+    js: '#!/usr/bin/env node\n// Universal Business Ledger - DB Status CLI\n'
+  }
+});
+
+// Build the DB reset CLI
+await esbuild.build({
+  entryPoints: ['cli/db-reset.ts'],
+  outfile: 'dist/cli/db-reset.js',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  sourcemap: true,
+  packages: 'external',
+  logLevel: 'info'
+});
+
+// Build the reset database CLI
+await esbuild.build({
+  entryPoints: ['cli/reset-db.ts'],
+  outfile: 'dist/cli/reset-db.js',
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node18',
+  sourcemap: true,
+  packages: 'external',
+  logLevel: 'info'
+});
+
 // Copy SQL schema file to dist
 console.log('📋 Copying SQL schema file...');
 try {

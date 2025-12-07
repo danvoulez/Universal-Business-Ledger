@@ -30,6 +30,11 @@ import type { EntityId, Timestamp, Hash } from '../schema/ledger';
  * - The System entity
  * - Tenant entities
  * - License/ToS agreements between System and Tenants
+ * 
+ * ⚠️ CANONICAL SOURCE: This is the ONLY place where Realm and RealmConfig are defined.
+ * All other modules should import from here, not redefine them.
+ * 
+ * @see docs/REALM-CONTRACT.md for the complete contract and invariants.
  */
 export interface Realm {
   readonly id: EntityId;
@@ -190,6 +195,12 @@ export interface Quantity {
  * - Standing: Ongoing relationship (employment, membership)
  * - Transactional: One-time exchange (sale, service)
  * - Meta: Agreements about how to make agreements (constitutions, protocols)
+ * 
+ * ⚠️ CANONICAL SOURCE: This is the ONLY place where Agreement is defined.
+ * All other modules should import from here, not redefine them.
+ * 
+ * NOTE: There is a legacy Agreement type in core/schema/ledger.ts for backward compatibility,
+ * but new code should use this one from primitives.ts.
  */
 export interface Agreement {
   readonly id: EntityId;
@@ -398,7 +409,12 @@ export interface Permission {
 // ============================================================================
 
 /**
- * Every ledger has these primordial entities that exist by axiom:
+ * Every ledger has these primordial entities that exist by axiom.
+ * 
+ * ⚠️ CANONICAL SOURCE: This is the ONLY place where these constants are defined.
+ * All other modules should import from here, not redefine them.
+ * 
+ * @see docs/REALM-CONTRACT.md for the contract governing these entities.
  */
 
 /** The System itself - the first entity, establishes all others */

@@ -20,6 +20,8 @@ import { createIntentHandler } from '../core/api/intent-api';
 import { createConversationalAgent } from './agent/implementation';
 import { createAgentAPIRouter } from './agent/api';
 import type { AgentAPIRouter } from './agent/api';
+import { buildAgentErrorResponse } from '../core/agent/primitives';
+import { logger, generateTraceId, extractTraceId } from '../core/observability/logger';
 import { AntennaWebSocketServer } from './websocket';
 import type { WebSocketHandlers } from './websocket';
 import { createAnthropicAdapter } from '../sdk/anthropic';
@@ -32,6 +34,7 @@ import { S3_PROVIDER_PRESETS } from '../core/adapters/standards/s3';
 import Redis from 'ioredis';
 import * as admin from './admin';
 import { createEventStore } from '../core/store/create-event-store';
+import { getConfig } from '../core/config';
 import { ProjectionManager } from '../core/store/projections-manager';
 import { createWorkflowEngine, AGREEMENT_WORKFLOW, ASSET_WORKFLOW } from '../core/engine/workflow-engine';
 import { createAggregateRepository } from '../core/aggregates/rehydrators';
@@ -120,10 +123,13 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
 
   return {
     async start() {
-      // Initialize LLM adapter from environment variables
+      // Load configuration (centralized and validated)
+      const config = getConfig();
+      
+      // Initialize LLM adapter from configuration
       if (!llmAdapter) {
-        const anthropicKey = process.env.ANTHROPIC_API_KEY;
-        const openaiKey = process.env.OPENAI_API_KEY;
+        const anthropicKey = config.llm.anthropicApiKey;
+        const openaiKey = config.llm.openaiApiKey;
         
         if (anthropicKey && anthropicKey !== 'your-anthropic-api-key') {
           console.log('🤖 Using Anthropic Claude');
@@ -147,10 +153,10 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
       
       // Initialize WorkspaceStorage adapter if AWS S3 is configured
       const adaptersMap = new Map<string, unknown>();
-      const awsRegion = process.env.AWS_REGION || 'us-east-1';
-      const awsS3Bucket = process.env.AWS_S3_BUCKET;
-      const awsAccessKeyId = process.env.AWS_ACCESS_KEY_ID;
-      const awsSecretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+      const awsRegion = config.aws.region;
+      const awsS3Bucket = config.aws.s3Bucket;
+      const awsAccessKeyId = config.aws.accessKeyId;
+      const awsSecretAccessKey = config.aws.secretAccessKey;
 
       // If S3 bucket is configured, try to initialize WorkspaceStorage
       // Credentials can come from environment variables OR IAM Role (when running on EC2)
@@ -229,8 +235,10 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
         },
         async getActorRoles(actor) {
           if (actor.type !== 'Party') return [];
-          // Get roles from aggregates
-          return [];
+          
+          // Get roles from role store
+          const roles = await roleStore.getRolesByHolder(actor.partyId);
+          return roles.map(r => r.roleType);
         },
         async emitDomainEvent(eventType, payload) {
           // Emit domain events if needed
@@ -244,19 +252,146 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
       // Create agreement type registry
       const agreementTypeRegistry = createAgreementTypeRegistry();
       
-      // Create in-memory role store (gets roles from aggregates)
+      // Helper function to find roles by holderId
+      async function findRolesByHolder(holderId: EntityId): Promise<Map<EntityId, Role>> {
+        const rolesMap = new Map<EntityId, Role>();
+        const { roleRehydrator } = await import('../core/aggregates/rehydrators');
+        const { reconstructAggregate } = await import('../core/store/event-store');
+        
+        // For PostgreSQL, we can query directly by payload
+        // For in-memory, we need to iterate through events
+        if (eventStore.name === 'PostgreSQL') {
+          // Use PostgreSQL-specific query if available
+          const pool = (eventStore as any).getPool?.();
+          if (pool) {
+            try {
+              const result = await pool.query(`
+                SELECT DISTINCT aggregate_id 
+                FROM events 
+                WHERE aggregate_type = 'Role' 
+                  AND event_type = 'RoleGranted'
+                  AND payload->>'holderId' = $1
+              `, [holderId]);
+              
+              for (const row of result.rows) {
+                const roleId = row.aggregate_id;
+                try {
+                  const roleState = await reconstructAggregate(
+                    eventStore,
+                    'Role' as any,
+                    roleId,
+                    roleRehydrator
+                  );
+                  
+                  if (roleState && roleState.exists) {
+                    rolesMap.set(roleId, roleState);
+                  }
+                } catch (err) {
+                  console.warn(`Failed to rehydrate role ${roleId}:`, err);
+                }
+              }
+            } catch (err) {
+              console.warn('PostgreSQL query failed, falling back to iteration:', err);
+            }
+          }
+        }
+        
+        // Fallback: iterate through recent events (last 10000 events)
+        // This is less efficient but works for both stores
+        if (rolesMap.size === 0) {
+          const currentSeq = await eventStore.getCurrentSequence();
+          const fromSeq = currentSeq > 10000n ? currentSeq - 10000n : 1n;
+          
+          const roleIds = new Set<EntityId>();
+          for await (const event of eventStore.getBySequence(fromSeq, currentSeq)) {
+            if (event.type === 'RoleGranted' && event.aggregateType === 'Role') {
+              const payload = event.payload as any;
+              if (payload.holderId === holderId) {
+                roleIds.add(event.aggregateId);
+              }
+            }
+          }
+          
+          for (const roleId of roleIds) {
+            try {
+              const roleState = await reconstructAggregate(
+                eventStore,
+                'Role' as any,
+                roleId,
+                roleRehydrator
+              );
+              
+              if (roleState && roleState.exists) {
+                rolesMap.set(roleId, roleState);
+              }
+            } catch (err) {
+              console.warn(`Failed to rehydrate role ${roleId}:`, err);
+            }
+          }
+        }
+        
+        return rolesMap;
+      }
+      
+      // Create role store that queries RoleGranted events from event store
       const roleStore: RoleStore = {
         async getActiveRoles(actor: ActorReference, realm: EntityId, at: Timestamp): Promise<readonly Role[]> {
-          // Get roles from agreements via aggregates
+          // Get entity ID from actor
+          let entityId: EntityId | undefined;
+          if (actor.type === 'Entity') {
+            entityId = actor.entityId;
+          } else if (actor.type === 'Party') {
+            entityId = actor.partyId;
+          } else {
+            return []; // System actors don't have roles from agreements
+          }
+          
+          if (!entityId) return [];
+          
+          // Find all roles for this holder
+          const rolesMap = await findRolesByHolder(entityId);
           const roles: Role[] = [];
-          // TODO: Query agreements and extract roles
+          const now = at || Date.now();
+          
+          for (const role of rolesMap.values()) {
+            if (!role.isActive) continue;
+            
+            // Check validity
+            const validFrom = role.validity.from || 0;
+            const validUntil = role.validity.until;
+            
+            if (now >= validFrom && (!validUntil || now <= validUntil)) {
+              // Check realm scope if applicable
+              if (role.context.type === 'Global' || 
+                  (role.context.type === 'Realm' && role.context.targetId === realm)) {
+                roles.push(role);
+              }
+            }
+          }
+          
           return roles;
         },
         async getRolesByHolder(holderId: EntityId): Promise<readonly Role[]> {
-          return [];
+          const rolesMap = await findRolesByHolder(holderId);
+          return Array.from(rolesMap.values()).filter(r => r.isActive);
         },
         async getRole(roleId: EntityId): Promise<Role | null> {
-          return null;
+          const { roleRehydrator } = await import('../core/aggregates/rehydrators');
+          const { reconstructAggregate } = await import('../core/store/event-store');
+          
+          try {
+            const roleState = await reconstructAggregate(
+              eventStore,
+              'Role' as any,
+              roleId,
+              roleRehydrator
+            );
+            
+            return (roleState && roleState.exists) ? roleState : null;
+          } catch (err) {
+            console.warn(`Failed to rehydrate role ${roleId}:`, err);
+            return null;
+          }
         },
       };
       
@@ -313,7 +448,7 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
       agentRouter = createAgentAPIRouter(agent);
       
       // Initialize rate limiter if Redis URL is provided
-      const redisUrl = config.redisUrl || process.env.REDIS_URL;
+      const redisUrl = config.redisUrl || getConfig().redis.url;
       if (redisUrl) {
         rateLimiter = createRedisRateLimiter({ redis: redisUrl });
         
@@ -342,7 +477,7 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
       server = http.createServer(async (req, res) => {
         // CORS headers - sempre retornar
         const origin = req.headers.origin || '';
-        const isProduction = process.env.NODE_ENV === 'production';
+        const isProduction = getConfig().server.nodeEnv === 'production';
         const allowAllOrigins = corsOrigins.includes('*') || !isProduction;
         const originAllowed = allowAllOrigins || corsOrigins.includes(origin);
         
@@ -384,7 +519,7 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           
           // Health check
           if (path === '/health' && req.method === 'GET') {
-            const databaseUrl = process.env.DATABASE_URL;
+            const databaseUrl = getConfig().database.url;
             const eventStoreHealth = await eventStore.healthCheck?.() || { healthy: false };
             const eventStoreName = eventStore.name || 'Unknown';
             const isPostgres = eventStoreName === 'PostgreSQL';
@@ -405,11 +540,97 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           }
           
           // Chat endpoint
+          // Ponto de entrada principal da API de chat. Não contém lógica de domínio; apenas traduz HTTP ↔ core ConversationalAgent.
           else if (path === '/chat' && req.method === 'POST') {
             if (!agentRouter) {
               throw new Error('Agent not initialized');
             }
-            result = await agentRouter.chat(body);
+            
+            // Extract or generate trace ID
+            const traceId = extractTraceId(req.headers) || generateTraceId();
+            
+            // ⚠️ CONTRACT: Either sessionId or startSession MUST be provided
+            if (!body.sessionId && !body.startSession) {
+              logger.warn('chat.request.invalid', {
+                component: 'api.chat',
+                traceId,
+                endpoint: '/chat',
+                reason: 'missing sessionId and startSession',
+              });
+              
+              // Fase 6: Return guidance message instead of plain error
+              const { buildSessionGuidanceMessage } = await import('../core/agent/messages/operatorMessages');
+              const guidance = buildSessionGuidanceMessage({
+                reason: 'Você precisa fornecer **ou** `startSession` **ou** `sessionId` para usar o chat.',
+              });
+              
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                error: 'Session ID or startSession required',
+                hint: 'Provide either sessionId (for existing session) or startSession (for new session)',
+                guidance: guidance.markdown, // Fase 6: Include guidance
+              }));
+              return;
+            }
+            
+            // Log request received
+            const sessionId = body.sessionId;
+            const realmId = body.startSession?.realmId;
+            const messageText = body.message?.text || '';
+            const actorType = body.startSession?.actor?.type || 'unknown';
+            
+            logger.info('chat.request.received', {
+              component: 'api.chat',
+              traceId,
+              endpoint: '/chat',
+              sessionId,
+              realmId,
+              actorType,
+              messageLength: messageText.length,
+            });
+            
+            try {
+              result = await agentRouter.chat(body);
+              
+              // Log successful response
+              const response = result as any;
+              logger.info('chat.response.success', {
+                component: 'api.chat',
+                traceId,
+                sessionId: response.sessionId || sessionId,
+                realmId,
+                turn: response.response?.meta?.turn,
+                processingMs: response.response?.meta?.processingMs,
+                affordancesCount: response.response?.affordances?.length || 0,
+                suggestionsCount: response.response?.suggestions?.length || 0,
+              });
+            } catch (error: any) {
+              // Log error
+              logger.error('chat.response.error', {
+                component: 'api.chat',
+                traceId,
+                sessionId,
+                realmId,
+                endpoint: '/chat',
+                errorCode: error?.code || 'UNKNOWN_ERROR',
+                errorMessage: error?.message || String(error),
+              });
+              
+              // Use buildAgentErrorResponse to maintain contract (Fase 6: with operational context)
+              const errorResponse = buildAgentErrorResponse(
+                sessionId || ('error-session' as EntityId),
+                error,
+                1,
+                {
+                  traceId,
+                  endpoint: '/chat',
+                  operation: 'chat',
+                }
+              );
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify(errorResponse));
+              return;
+            }
           }
           
           // Start session
@@ -446,6 +667,9 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           
           // Intent endpoint (from core/api/http-server)
           else if ((path === '/' || path === '/intent') && req.method === 'POST') {
+            // Extract or generate trace ID
+            const traceId = extractTraceId(req.headers) || generateTraceId();
+            
             // Extrair realmId da API key se disponível (não precisa informar em outros logins)
             let resolvedRealmId = body.realm || defaultRealmId;
             
@@ -504,27 +728,39 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
             const startTime = Date.now();
             
             if (body.intent === 'createRealm') {
-              const realmData = await admin.createRealm(body.payload, intentHandler);
-              result = {
-                success: true,
-                outcome: { 
-                  type: 'Created' as const, 
-                  entity: {
-                    ...realmData.realm,
-                    apiKey: realmData.apiKey, // Include API key in response
-                    entityId: realmData.entityId,
-                  }, 
-                  id: realmData.realm.id 
-                },
-                events: [],
-                affordances: [
-                  { intent: 'createUser', description: 'Create a user in this realm', required: ['realmId', 'email', 'name'] },
-                  { intent: 'register', description: 'Create an entity in this realm', required: ['entityType', 'identity'] },
-                  { intent: 'createApiKey', description: 'Create additional API keys', required: ['realmId', 'entityId', 'name'] },
-                  { intent: 'query', description: 'Query entities, agreements, or assets', required: ['queryType'] },
-                ],
-                meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
-              };
+              try {
+                const realmData = await admin.createRealm(body.payload, finalIntentHandler || intentHandler);
+                result = {
+                  success: true,
+                  outcome: { 
+                    type: 'Created' as const, 
+                    entity: {
+                      ...realmData.realm,
+                      apiKey: realmData.apiKey, // Include API key in response
+                      entityId: realmData.entityId,
+                    }, 
+                    id: realmData.realm.id 
+                  },
+                  events: [],
+                  affordances: [
+                    { intent: 'createUser', description: 'Create a user in this realm', required: ['realmId', 'email', 'name'] },
+                    { intent: 'register', description: 'Create an entity in this realm', required: ['entityType', 'identity'] },
+                    { intent: 'createApiKey', description: 'Create additional API keys', required: ['realmId', 'entityId', 'name'] },
+                    { intent: 'query', description: 'Query entities, agreements, or assets', required: ['queryType'] },
+                  ],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              } catch (e) {
+                const errorMessage = e instanceof Error ? e.message : String(e);
+                result = {
+                  success: false,
+                  outcome: { type: 'Nothing' as const, reason: errorMessage },
+                  events: [],
+                  affordances: [],
+                  errors: [{ code: 'CREATE_REALM_ERROR', message: errorMessage }],
+                  meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+                };
+              }
             } else if (body.intent === 'createUser') {
                 // Criar usuário - sempre requer realmId
                 const userData = await admin.createUser(body.payload, intentHandler);
@@ -696,7 +932,7 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           else if (path === '/auth/delegate' && req.method === 'POST') {
             // Redirect to intent handler (following ORIGINAL philosophy: everything via /intent)
             const masterKey = req.headers.authorization?.replace('Bearer ', '') || body.masterKey;
-            const expectedMasterKey = config.masterApiKey || process.env.UBL_MASTER_API_KEY;
+            const expectedMasterKey = config.masterApiKey || getConfig().auth.masterApiKey;
             
             if (!expectedMasterKey || masterKey !== expectedMasterKey) {
               res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -781,8 +1017,33 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
           
         } catch (error: any) {
           console.error('Antenna error:', error);
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: error.message }));
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          
+          // For /chat endpoint, use buildAgentErrorResponse to maintain ChatResponse contract
+          if (path === '/chat' && req.method === 'POST') {
+            const sessionId = body?.sessionId || ('error-session' as EntityId);
+            const errorResponse = buildAgentErrorResponse(sessionId, error, 1);
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(errorResponse));
+            return;
+          }
+          
+          // For other endpoints, return IntentResult format
+          const errorResult: any = {
+            success: false,
+            outcome: { type: 'Nothing' as const, reason: errorMessage },
+            events: [],
+            affordances: [],
+            errors: [{ code: 'INTERNAL_ERROR', message: errorMessage }],
+            meta: { processedAt: Date.now(), processingTime: 0 },
+          };
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(errorResult, (key, value) => {
+            if (typeof value === 'bigint') {
+              return value.toString();
+            }
+            return value;
+          }));
         }
       });
       
@@ -790,7 +1051,9 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
         // Start WebSocket server
         if (intentHandler) {
           const wsHandlers: WebSocketHandlers = {
-            getCurrentSequence: () => BigInt(0), // TODO: Get from event store
+            getCurrentSequence: async () => {
+              return await eventStore.getCurrentSequence();
+            },
             handleIntent: async (intent) => {
               const result = await intentHandler.handle({
                 intent: intent.intent,
@@ -802,8 +1065,18 @@ export function createAntenna(config: AntennaConfig): AntennaInstance {
               return result;
             },
             getEventsFrom: async function* (sequence: bigint) {
-              // TODO: Implement event streaming from event store
-              yield* [];
+              // Stream events from the specified sequence onwards
+              const currentSequence = await eventStore.getCurrentSequence();
+              
+              if (sequence > currentSequence) {
+                // No new events
+                return;
+              }
+              
+              // Get events from sequence to current
+              for await (const event of eventStore.getBySequence(sequence, currentSequence)) {
+                yield event;
+              }
             },
             handleChat: async (request) => {
               if (!agentRouter) {
@@ -895,8 +1168,10 @@ Ready to receive signals! 🚀
  * Convenience function for quick deployment.
  */
 export async function startAntenna(config: Partial<AntennaConfig> = {}): Promise<AntennaInstance> {
+  const appConfig = getConfig();
   const antenna = createAntenna({
-    port: config.port || parseInt(process.env.PORT || '3000'),
+    port: config.port || appConfig.server.port,
+    host: config.host || appConfig.server.host,
     ...config,
   });
   

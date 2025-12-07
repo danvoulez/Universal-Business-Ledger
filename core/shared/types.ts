@@ -280,13 +280,13 @@ export const Ids = {
 // ============================================================================
 // PRIMORDIAL CONSTANTS
 // ============================================================================
+// NOTE: These constants are re-exported from core/universal/primitives.ts
+// which is the CANONICAL source. This re-export is for backward compatibility.
+// New code should import directly from '../universal/primitives'.
 
-/** The System entity - the first entity, establishes all others */
-export const PRIMORDIAL_SYSTEM_ID = asEntityId('00000000-0000-0000-0000-000000000001');
-
-/** The Primordial Realm - realm 0, contains meta-structure */
-export const PRIMORDIAL_REALM_ID = asEntityId('00000000-0000-0000-0000-000000000000');
-
-/** The Genesis Agreement - the "constitution" of the ledger */
-export const GENESIS_AGREEMENT_ID = asEntityId('00000000-0000-0000-0000-000000000002');
+export {
+  PRIMORDIAL_SYSTEM_ID,
+  PRIMORDIAL_REALM_ID,
+  GENESIS_AGREEMENT_ID,
+} from '../universal/primitives';
 

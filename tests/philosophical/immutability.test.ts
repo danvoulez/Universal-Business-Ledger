@@ -7,7 +7,7 @@
  * Sprint 1 - Prioridade: CRÍTICA
  */
 
-import { describe, it, before } from 'node:test';
+import { describe, it, before, beforeEach } from 'node:test';
 import assert from 'node:assert';
 import { createHashChain, createTemporalEnforcer } from '../../core/enforcement/invariants.js';
 import { Ids } from '../../core/shared/types.js';
@@ -429,7 +429,7 @@ describe('Temporal Integrity - Immutability', () => {
       
       // The last event has payload { state: 'state-4' }
       assert.equal(stateAt5.state, 'state-4', `State at sequence 5 should be state-4, got ${stateAt5.state}`);
-      assert.notEqual(stateAt3.state, stateAt5.state, 'States should differ');
+      assert.notEqual(stateAtTarget.state, stateAt5.state, 'States should differ');
     });
     
     it('should maintain event order', async () => {

@@ -6,6 +6,7 @@
  * - Criar ledger instance
  * - Limpar dados entre testes
  * - Criar fixtures
+ * - Logging e feedback LLM-friendly
  */
 
 import { createInMemoryEventStore } from '../../core/store/event-store.js';
@@ -13,6 +14,7 @@ import { createPostgresEventStoreImpl } from '../../core/store/postgres-event-st
 import { createUniversalLedger } from '../../core/index.js';
 import type { EventStore } from '../../core/store/event-store.js';
 import type { UniversalLedger } from '../../core/index.js';
+import { llmError } from './llm-errors.js';
 
 export interface TestContext {
   eventStore: EventStore;
@@ -48,23 +50,42 @@ export async function createPostgresTestContext(
   const databaseUrl = connectionString || process.env.TEST_DATABASE_URL;
   
   if (!databaseUrl) {
-    throw new Error('TEST_DATABASE_URL or connectionString required for PostgreSQL tests');
+    throw llmError('SETUP_FAILED',
+      'TEST_DATABASE_URL ou connectionString necessário para testes PostgreSQL',
+      {
+        hasEnvVar: !!process.env.TEST_DATABASE_URL,
+        hasConnectionString: !!connectionString,
+      },
+      'Defina TEST_DATABASE_URL no ambiente ou passe connectionString como parâmetro'
+    );
   }
   
-  const eventStore = createPostgresEventStoreImpl(databaseUrl);
-  const ledger = createUniversalLedger({ eventStore });
-  
-  return {
-    eventStore,
-    ledger,
-    async cleanup() {
-      // Optionally clean test data
-      // In production, use transactions and rollback
-      if (typeof eventStore.shutdown === 'function') {
-        await eventStore.shutdown();
+  try {
+    const eventStore = createPostgresEventStoreImpl(databaseUrl);
+    const ledger = createUniversalLedger({ eventStore });
+    
+    return {
+      eventStore,
+      ledger,
+      async cleanup() {
+        // Optionally clean test data
+        // In production, use transactions and rollback
+        if (typeof eventStore.shutdown === 'function') {
+          await eventStore.shutdown();
+        }
       }
-    }
-  };
+    };
+  } catch (error: any) {
+    throw llmError('SETUP_FAILED',
+      'Falha ao criar contexto de teste PostgreSQL',
+      {
+        error: error.message,
+        stack: error.stack,
+        databaseUrl: databaseUrl.replace(/:[^:@]+@/, ':****@'), // Ocultar senha
+      },
+      'Verifique se o banco de dados está acessível e as credenciais estão corretas'
+    );
+  }
 }
 
 /**

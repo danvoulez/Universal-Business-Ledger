@@ -26,7 +26,7 @@ CREATE TABLE events (
     event_type      TEXT NOT NULL,
     
     -- Aggregate reference
-    aggregate_id    UUID NOT NULL,
+    aggregate_id    TEXT NOT NULL,  -- Changed from UUID to TEXT to support custom IDs (ent-xxx, agr-xxx, etc.)
     aggregate_type  TEXT NOT NULL CHECK (aggregate_type IN ('Party', 'Asset', 'Agreement', 'Role', 'Workflow', 'Flow')),
     aggregate_version INT NOT NULL,
     
@@ -198,7 +198,7 @@ CREATE TRIGGER verify_aggregate_version_on_insert
 CREATE TABLE snapshots (
     id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     aggregate_type  TEXT NOT NULL,
-    aggregate_id    UUID NOT NULL,
+    aggregate_id    TEXT NOT NULL,  -- Changed from UUID to TEXT to support custom IDs
     version         INT NOT NULL,
     state           JSONB NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -227,7 +227,7 @@ CREATE TABLE projection_checkpoints (
 -- =============================================================================
 
 CREATE TABLE parties_projection (
-    id              UUID PRIMARY KEY,
+    id              TEXT PRIMARY KEY,
     party_type      TEXT NOT NULL CHECK (party_type IN ('Person', 'Organization', 'System', 'Witness')),
     name            TEXT NOT NULL,
     identifiers     JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -250,11 +250,11 @@ CREATE INDEX idx_parties_identifiers ON parties_projection USING GIN (identifier
 -- =============================================================================
 
 CREATE TABLE assets_projection (
-    id              UUID PRIMARY KEY,
+    id              TEXT PRIMARY KEY,
     asset_type      TEXT NOT NULL,
     status          TEXT NOT NULL CHECK (status IN ('Created', 'InStock', 'Reserved', 'Sold', 'Transferred', 'Consumed', 'Destroyed')),
-    owner_id        UUID,
-    custodian_id    UUID,
+    owner_id        TEXT,
+    custodian_id    TEXT,
     properties      JSONB NOT NULL DEFAULT '{}'::jsonb,
     quantity_amount NUMERIC,
     quantity_unit   TEXT,
@@ -273,13 +273,13 @@ CREATE INDEX idx_assets_properties ON assets_projection USING GIN (properties js
 -- =============================================================================
 
 CREATE TABLE agreements_projection (
-    id              UUID PRIMARY KEY,
+    id              TEXT PRIMARY KEY,
     agreement_type  TEXT NOT NULL,
     status          TEXT NOT NULL CHECK (status IN ('Draft', 'Proposed', 'UnderReview', 'Accepted', 'Active', 'Fulfilled', 'Breached', 'Terminated', 'Expired')),
     parties         JSONB NOT NULL DEFAULT '[]'::jsonb,
     terms           JSONB NOT NULL DEFAULT '{}'::jsonb,
     assets          JSONB NOT NULL DEFAULT '[]'::jsonb,
-    parent_id       UUID,
+    parent_id       TEXT,
     effective_from  TIMESTAMPTZ,
     effective_until TIMESTAMPTZ,
     created_at      TIMESTAMPTZ NOT NULL,
@@ -297,12 +297,12 @@ CREATE INDEX idx_agreements_effective ON agreements_projection (effective_from, 
 -- =============================================================================
 
 CREATE TABLE roles_projection (
-    id              UUID PRIMARY KEY,
+    id              TEXT PRIMARY KEY,
     role_type       TEXT NOT NULL,
-    holder_id       UUID NOT NULL,
+    holder_id       TEXT NOT NULL,
     context_type    TEXT NOT NULL,
-    context_id      UUID,
-    established_by  UUID NOT NULL,  -- Agreement ID
+    context_id      TEXT,
+    established_by  TEXT NOT NULL,  -- Agreement ID
     valid_from      TIMESTAMPTZ NOT NULL,
     valid_until     TIMESTAMPTZ,
     is_active       BOOLEAN NOT NULL DEFAULT true,
@@ -321,11 +321,11 @@ CREATE INDEX idx_roles_context ON roles_projection (context_type, context_id);
 -- =============================================================================
 
 CREATE TABLE workflows_projection (
-    id                  UUID PRIMARY KEY,
-    definition_id       UUID NOT NULL,
+    id                  TEXT PRIMARY KEY,
+    definition_id       TEXT NOT NULL,
     definition_version  INT NOT NULL,
     target_type         TEXT NOT NULL,
-    target_id           UUID NOT NULL,
+    target_id           TEXT NOT NULL,
     current_state       TEXT NOT NULL,
     is_complete         BOOLEAN NOT NULL DEFAULT false,
     completed_at        TIMESTAMPTZ,
@@ -345,8 +345,8 @@ CREATE INDEX idx_workflows_active ON workflows_projection (is_complete) WHERE is
 -- =============================================================================
 
 CREATE TABLE workspace_projection (
-    id                  UUID PRIMARY KEY,
-    realm_id            UUID NOT NULL,
+    id                  TEXT PRIMARY KEY,
+    realm_id            TEXT NOT NULL,
     name                TEXT NOT NULL,
     description         TEXT,
     runtime             TEXT NOT NULL,
@@ -375,7 +375,7 @@ CREATE INDEX idx_workspace_projection_functions ON workspace_projection USING GI
 -- Get aggregate state at a specific point in time
 CREATE OR REPLACE FUNCTION get_events_at_time(
     p_aggregate_type TEXT,
-    p_aggregate_id UUID,
+    p_aggregate_id TEXT,
     p_at_time TIMESTAMPTZ DEFAULT NOW()
 )
 RETURNS SETOF events AS $$
@@ -393,7 +393,7 @@ $$ LANGUAGE plpgsql STABLE;
 -- Get aggregate state at a specific version
 CREATE OR REPLACE FUNCTION get_events_at_version(
     p_aggregate_type TEXT,
-    p_aggregate_id UUID,
+    p_aggregate_id TEXT,
     p_version INT
 )
 RETURNS SETOF events AS $$
@@ -415,7 +415,7 @@ $$ LANGUAGE plpgsql STABLE;
 -- Get audit trail for an aggregate
 CREATE OR REPLACE FUNCTION get_audit_trail(
     p_aggregate_type TEXT,
-    p_aggregate_id UUID,
+    p_aggregate_id TEXT,
     p_from_time TIMESTAMPTZ DEFAULT NULL,
     p_to_time TIMESTAMPTZ DEFAULT NULL,
     p_limit INT DEFAULT 100
@@ -463,7 +463,7 @@ RETURNS TABLE (
     timestamp TIMESTAMPTZ,
     event_type TEXT,
     aggregate_type TEXT,
-    aggregate_id UUID,
+    aggregate_id TEXT,
     payload JSONB
 ) AS $$
 BEGIN

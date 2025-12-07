@@ -8,12 +8,14 @@
 
 import type { EventStore } from './event-store';
 import { createInMemoryEventStore } from './event-store';
+import { getConfig } from '../config/index.js';
 
 /**
  * Create EventStore based on environment
  */
 export function createEventStore(): EventStore {
-  const databaseUrl = process.env.DATABASE_URL;
+  const config = getConfig();
+  const databaseUrl = config.database.url;
   
   if (databaseUrl) {
     // PostgreSQL is configured - use it

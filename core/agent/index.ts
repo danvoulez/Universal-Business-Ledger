@@ -110,12 +110,37 @@ export {
 } from './conversation';
 
 // ============================================================================
+// PRIMITIVES - Canonical Types (Fase 3)
+// ============================================================================
+
+export type {
+  ChatResponse,
+  AgentResponse,
+  UIAffordance,
+  FocusChange,
+  BreadcrumbItem,
+  SubscriptionInfo,
+  AgentInterpretation,
+} from './primitives';
+
+export {
+  buildSuggestionsFromAffordances,
+  buildAgentErrorResponse,
+  validateAgentResponse,
+  ensureNonEmptyMarkdown,
+  ensureAffordancesArray,
+} from './primitives';
+
+export {
+  createFakeLLMAdapter,
+} from './fake-llm-adapter';
+
+// ============================================================================
 // API - HTTP Routes
 // ============================================================================
 
 export type {
   ChatRequest,
-  ChatResponse,
   StartSessionRequest,
   StartSessionResponse,
   GetSessionResponse,

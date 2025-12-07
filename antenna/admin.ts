@@ -7,6 +7,7 @@
 
 import type { EntityId, ActorReference } from '../core/shared/types';
 import type { IntentHandler } from '../core/api/intent-api';
+import type { RealmConfig } from '../core/universal/primitives';
 
 // ============================================================================
 // TYPES
@@ -94,10 +95,15 @@ export async function createRealm(
       });
       if (systemResult.success && systemResult.outcome.type === 'Created') {
         systemEntityId = systemResult.outcome.id;
+      } else {
+        console.warn('System entity creation failed:', systemResult);
       }
     } catch (e) {
-      console.warn('Could not create system entity via intent handler:', e);
+      console.error('Could not create system entity via intent handler:', e);
+      throw new Error(`Failed to create system entity: ${e instanceof Error ? e.message : String(e)}`);
     }
+  } else {
+    throw new Error('Intent handler is required to create realm');
   }
   
   // Step 2: Create Organization entity (Licensee) in primordial realm
@@ -119,29 +125,54 @@ export async function createRealm(
       });
       if (orgResult.success && orgResult.outcome.type === 'Created') {
         licenseeEntityId = orgResult.outcome.id;
+      } else {
+        console.warn('Organization entity creation failed:', orgResult);
       }
     } catch (e) {
-      console.warn('Could not create organization entity via intent handler:', e);
+      console.error('Could not create organization entity via intent handler:', e);
+      throw new Error(`Failed to create organization entity: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
   
-  if (!systemEntityId || !licenseeEntityId || !intentHandler) {
-    throw new Error('Failed to create required entities for tenant-license agreement');
+  if (!systemEntityId || !licenseeEntityId) {
+    throw new Error(`Failed to create required entities for tenant-license agreement. System: ${systemEntityId ? 'OK' : 'FAILED'}, Licensee: ${licenseeEntityId ? 'OK' : 'FAILED'}`);
   }
   
   // Step 3: Propose tenant-license agreement in primordial realm
   const agreementId = generateId('agreement');
   let createdRealmId: EntityId | undefined;
   
+  // Get services from context (outside try block so they're available after catch)
+  const handlerContext = (intentHandler as any).context;
+  if (!handlerContext) {
+    throw new Error('Intent handler context is not available');
+  }
+  const eventStore = handlerContext.eventStore;
+  const agreementTypeRegistry = handlerContext.agreements;
+  const realmManager = handlerContext.realmManager;
+  
+  if (!eventStore) {
+    console.error('Handler context keys:', Object.keys(handlerContext));
+    throw new Error(`eventStore is not defined in context. Available keys: ${Object.keys(handlerContext).join(', ')}`);
+  }
+  if (!agreementTypeRegistry) {
+    throw new Error('agreementTypeRegistry is not defined');
+  }
+  if (!realmManager) {
+    throw new Error('realmManager is not defined');
+  }
+  
   try {
-    // Get services from context
-    const context = (intentHandler as any).context;
-    const eventStore = context?.eventStore;
-    const agreementTypeRegistry = context?.agreements;
-    const realmManager = context?.realmManager;
     
-    if (!eventStore || !agreementTypeRegistry || !realmManager) {
-      throw new Error('Intent handler missing required context (eventStore, agreements, realmManager)');
+    if (!eventStore) {
+      console.error('Handler context keys:', Object.keys(handlerContext));
+      throw new Error(`eventStore is not defined in context. Available keys: ${Object.keys(handlerContext).join(', ')}`);
+    }
+    if (!agreementTypeRegistry) {
+      throw new Error('agreementTypeRegistry is not defined');
+    }
+    if (!realmManager) {
+      throw new Error('realmManager is not defined');
     }
     
     // Propose agreement
@@ -254,29 +285,27 @@ export async function createRealm(
   if (!createdRealmId) {
     const realmId = generateId('realm');
     // Get current aggregate version
-    const latestRealmEvent = await eventStore.getLatest('Flow' as any, realmId);
+    const latestRealmEvent = await eventStore.getLatest('Realm' as any, realmId);
     const nextRealmVersion = latestRealmEvent ? latestRealmEvent.aggregateVersion + 1 : 1;
     
-    // Create realm via Event Store (following ORIGINAL philosophy)
-    await eventStore.append({
-      type: 'RealmCreated',
-      aggregateType: 'Flow' as any, // Realms use Flow aggregate type
-      aggregateId: realmId,
-      aggregateVersion: nextRealmVersion,
-      actor: { type: 'Entity', entityId: licenseeEntityId } as ActorReference,
-      timestamp: Date.now(),
-      payload: {
-        type: 'RealmCreated',
-        name: request.name,
-        establishedBy: agreementId,
-        config: {
-          isolation: request.config?.isolation || 'Full',
-          crossRealmAllowed: request.config?.crossRealmAllowed || false,
-          allowedEntityTypes: request.config?.allowedEntityTypes,
-          allowedAgreementTypes: request.config?.allowedAgreementTypes,
-        },
-      },
-    });
+    // Create realm via Event Store using canonical helper
+    const { buildRealmCreatedEvent } = await import('../core/universal/realm-events');
+    const realmConfig: RealmConfig = {
+      isolation: request.config?.isolation || 'Full',
+      crossRealmAllowed: request.config?.crossRealmAllowed || false,
+      allowedEntityTypes: request.config?.allowedEntityTypes,
+      allowedAgreementTypes: request.config?.allowedAgreementTypes,
+    };
+    const realmCreatedEvent = buildRealmCreatedEvent(
+      realmId,
+      request.name,
+      agreementId,
+      realmConfig,
+      { type: 'Entity', entityId: licenseeEntityId } as ActorReference,
+      Date.now(),
+      nextRealmVersion
+    );
+    await eventStore.append(realmCreatedEvent);
     createdRealmId = realmId;
   }
     
@@ -286,6 +315,9 @@ export async function createRealm(
   }
   
   // Step 7: Create API key for Licensee entity
+  if (!eventStore) {
+    throw new Error('eventStore is not available for API key creation');
+  }
   const apiKeyData = await createApiKey({
     realmId: createdRealmId!,
     entityId: licenseeEntityId,

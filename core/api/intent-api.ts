@@ -367,6 +367,9 @@ import {
   handleRegisterFunction,
   handleExecuteFunction,
   handleExecuteScript,
+  handleCloneRepository,
+  handlePullRepository,
+  handlePushRepository,
   type UploadFileIntent,
   type DownloadFileIntent,
   type ListFilesIntent,
@@ -375,12 +378,18 @@ import {
   type RegisterFunctionIntent,
   type ExecuteFunctionIntent,
   type ExecuteScriptIntent,
+  type CloneRepositoryIntent,
+  type PullRepositoryIntent,
+  type PushRepositoryIntent,
 } from './intent-handlers/workspace-intents';
 
 // Import asset intent handlers
 import {
   handleRegisterAsset,
 } from './intent-handlers/asset-intents';
+
+// Import Ids for entity ID generation
+import { Ids } from '../shared/types.js';
 
 export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
   // --- Entity Intents ---
@@ -406,16 +415,84 @@ export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
     },
     requiredPermissions: ['entity:create'],
     handler: async (intent, context) => {
-      // Implementation would go here
-      return {
-        success: true,
-        outcome: { type: 'Created', entity: {}, id: '' as EntityId },
-        events: [],
-        affordances: [
-          { intent: 'propose', description: 'Propose an agreement with this entity', required: ['agreementType', 'terms'] },
-        ],
-        meta: { processedAt: Date.now(), processingTime: 0 },
-      };
+      const startTime = Date.now();
+      
+      try {
+        // Extract payload
+        const { entityType, identity } = intent.payload as { entityType: string; identity: any };
+        
+        // Validate entityType
+        const validPartyTypes = ['Person', 'Organization', 'System'];
+        if (!validPartyTypes.includes(entityType)) {
+          return {
+            success: false,
+            outcome: { type: 'Nothing' as const, reason: `Invalid entityType: ${entityType}. Must be one of: ${validPartyTypes.join(', ')}` },
+            events: [],
+            affordances: [],
+            errors: [{ code: 'INVALID_ENTITY_TYPE', message: `Invalid entityType: ${entityType}` }],
+            meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+          };
+        }
+        
+        // Generate entity ID
+        const entityId = Ids.entity();
+        const eventStore = context.eventStore as any;
+        
+        // Get current aggregate version
+        const latestEvent = await eventStore.getLatest('Party' as any, entityId);
+        const nextAggregateVersion = latestEvent ? latestEvent.aggregateVersion + 1 : 1;
+        
+        // Create PartyRegistered event
+        const event = await eventStore.append({
+          type: 'PartyRegistered',
+          aggregateType: 'Party' as any,
+          aggregateId: entityId,
+          aggregateVersion: nextAggregateVersion,
+          actor: intent.actor,
+          timestamp: intent.timestamp || Date.now(),
+          payload: {
+            type: 'PartyRegistered',
+            partyType: entityType as any,
+            identity: {
+              name: identity.name || 'Unnamed',
+              identifiers: identity.identifiers || [],
+              contacts: identity.contacts || [],
+            },
+          },
+        });
+        
+        return {
+          success: true,
+          outcome: { 
+            type: 'Created' as const, 
+            entity: {
+              id: entityId,
+              type: entityType,
+              identity: {
+                name: identity.name || 'Unnamed',
+                identifiers: identity.identifiers || [],
+                contacts: identity.contacts || [],
+              },
+            }, 
+            id: entityId 
+          },
+          events: [event],
+          affordances: [
+            { intent: 'propose', description: 'Propose an agreement with this entity', required: ['agreementType', 'terms'] },
+          ],
+          meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+        };
+      } catch (e) {
+        const errorMessage = e instanceof Error ? e.message : String(e);
+        return {
+          success: false,
+          outcome: { type: 'Nothing' as const, reason: errorMessage },
+          events: [],
+          affordances: [],
+          errors: [{ code: 'REGISTER_ERROR', message: errorMessage }],
+          meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
+        };
+      }
     },
   },
   
@@ -454,15 +531,50 @@ export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
       },
     ],
     handler: async (intent, context) => {
+      const startTime = Date.now();
+      const agreementId = Ids.agreement();
+      const eventStore = context.eventStore as any;
+      
+      // Get current aggregate version
+      const latestEvent = await eventStore.getLatest('Agreement' as any, agreementId);
+      const nextAggregateVersion = latestEvent ? latestEvent.aggregateVersion + 1 : 1;
+      
+      // Create AgreementProposed event
+      const event = await eventStore.append({
+        type: 'AgreementProposed',
+        aggregateType: 'Agreement' as any,
+        aggregateId: agreementId,
+        aggregateVersion: nextAggregateVersion,
+        actor: intent.actor,
+        timestamp: intent.timestamp || Date.now(),
+        payload: {
+          agreementType: intent.payload.agreementType,
+          parties: intent.payload.parties,
+          terms: intent.payload.terms,
+          assets: intent.payload.assets,
+          validity: intent.payload.validity,
+          parentAgreementId: intent.payload.parentAgreementId,
+        },
+      });
+      
       return {
         success: true,
-        outcome: { type: 'Created', entity: {}, id: '' as EntityId },
-        events: [],
+        outcome: { 
+          type: 'Created' as const, 
+          entity: {
+            id: agreementId,
+            agreementType: intent.payload.agreementType,
+            status: 'Proposed',
+            parties: intent.payload.parties,
+          }, 
+          id: agreementId 
+        },
+        events: [event],
         affordances: [
-          { intent: 'consent', description: 'Give consent to this agreement', required: ['method'] },
-          { intent: 'terminate', description: 'Terminate this agreement', required: ['reason'] },
+          { intent: 'consent', description: 'Give consent to this agreement', required: ['agreementId', 'method'] },
+          { intent: 'terminate', description: 'Terminate this agreement', required: ['agreementId', 'reason'] },
         ],
-        meta: { processedAt: Date.now(), processingTime: 0 },
+        meta: { processedAt: Date.now(), processingTime: Date.now() - startTime },
       };
     },
   },
@@ -851,11 +963,81 @@ export const BUILT_IN_INTENTS: readonly IntentDefinition[] = [
     requiredPermissions: ['Workspace:Script:execute'],
     handler: handleExecuteScript,
   },
-  // Git repository handlers - TODO: Implement
-  // {
-  //   name: 'clone:repository',
-  //   ...
-  // },
+  // Git repository handlers
+  {
+    name: 'clone:repository',
+    description: 'Clone a Git repository into a workspace',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'repositoryUrl'],
+      properties: {
+        workspaceId: { type: 'string' },
+        repositoryUrl: { type: 'string' },
+        targetPath: { type: 'string' },
+        branch: { type: 'string' },
+        credentials: {
+          type: 'object',
+          properties: {
+            username: { type: 'string' },
+            password: { type: 'string' },
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    requiredPermissions: ['Workspace:Repository:create'],
+    handler: handleCloneRepository,
+  },
+  {
+    name: 'pull:repository',
+    description: 'Pull latest changes from a Git repository',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'repositoryId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        repositoryId: { type: 'string' },
+        branch: { type: 'string' },
+        credentials: {
+          type: 'object',
+          properties: {
+            username: { type: 'string' },
+            password: { type: 'string' },
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    requiredPermissions: ['Workspace:Repository:read'],
+    handler: handlePullRepository,
+  },
+  {
+    name: 'push:repository',
+    description: 'Push changes to a Git repository',
+    category: 'Asset',
+    schema: {
+      type: 'object',
+      required: ['workspaceId', 'repositoryId'],
+      properties: {
+        workspaceId: { type: 'string' },
+        repositoryId: { type: 'string' },
+        branch: { type: 'string' },
+        message: { type: 'string' },
+        credentials: {
+          type: 'object',
+          properties: {
+            username: { type: 'string' },
+            password: { type: 'string' },
+            token: { type: 'string' },
+          },
+        },
+      },
+    },
+    requiredPermissions: ['Workspace:Repository:update'],
+    handler: handlePushRepository,
+  },
   
   // --- Authentication/Authorization Intents ---
   {
@@ -1025,7 +1207,14 @@ export function createIntentHandler(
     ...context,
   };
 
-  return {
+  // Store the full context including eventStore, agreements, realmManager
+  const fullContext: Partial<HandlerContext> = {
+    ...defaultContext,
+    ...context, // Ensure context passed to function is included
+  };
+  
+  const handler: IntentHandler & { context?: Partial<HandlerContext> } = {
+    context: fullContext,
     async handle<T>(intent: Intent<T>): Promise<IntentResult> {
       const definition = intentRegistry.get(intent.intent);
       
@@ -1046,11 +1235,13 @@ export function createIntentHandler(
       }
 
       try {
+        // Merge contexts: defaultContext (from handler creation) + context (from function parameter)
+        // This ensures eventStore, agreements, etc. are available
         const handlerContext: HandlerContext = {
           realm: intent.realm,
           actor: intent.actor,
-          ...defaultContext,
-          ...context,
+          ...defaultContext, // This includes eventStore, agreements, realmManager from createIntentHandler
+          ...context, // Override with any additional context
         } as HandlerContext;
 
         return await definition.handler(intent, handlerContext);
@@ -1148,5 +1339,7 @@ export function createIntentHandler(
       };
     },
   };
+  
+  return handler;
 }
 

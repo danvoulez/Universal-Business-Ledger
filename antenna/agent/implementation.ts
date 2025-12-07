@@ -1,6 +1,16 @@
 /**
  * CONVERSATIONAL AGENT IMPLEMENTATION
  * 
+ * AGENTE DO DIAMANTE - UX DE OPERADOR
+ * 
+ * Este módulo define como o agente conversa com o operador:
+ * - tom da mensagem
+ * - mensagens de erro operacionais
+ * - sugestões de próximas ações
+ * - integração com affordances
+ * 
+ * Núcleo do agente conversacional. Orquestra sessões, turns, affordances e resposta ao usuário.
+ * 
  * The actual implementation of the ConversationalAgent interface.
  * This is where the magic happens:
  * 
@@ -13,6 +23,8 @@
  * - LLM Adapter (Anthropic, OpenAI, etc.) for understanding
  * - Intent API for execution
  * - Memory system for context
+ * 
+ * Fase 6: Enhanced with operator-friendly messages, runbooks, and operational guidance.
  */
 
 import type { EntityId, ActorReference, Timestamp } from '../../core/shared/types';
@@ -29,6 +41,11 @@ import type {
   SessionContext,
   FocusChange,
 } from './conversation';
+import {
+  ensureNonEmptyMarkdown,
+  ensureAffordancesArray,
+  buildSuggestionsFromAffordances,
+} from '../../core/agent/primitives';
 
 // ============================================================================
 // CONFIGURATION
@@ -187,6 +204,12 @@ export function createConversationalAgent(
       
       // Handle special welcome message
       if (message.text === '__welcome__') {
+        const welcomeAffordances: UIAffordance[] = [
+          { intent: 'register', label: 'New Entity', style: 'primary', icon: 'user-plus' },
+          { intent: 'propose', label: 'New Agreement', style: 'secondary', icon: 'file-plus' },
+          { intent: 'query', label: 'Search', style: 'ghost', icon: 'search' },
+        ];
+        
         const welcomeResponse: AgentResponse = {
           id: generateId('resp'),
           content: {
@@ -203,20 +226,13 @@ I can help you:
 
 What would you like to do?`,
           },
-          affordances: [
-            { intent: 'register', label: 'New Entity', style: 'primary', icon: 'user-plus' },
-            { intent: 'propose', label: 'New Agreement', style: 'secondary', icon: 'file-plus' },
-            { intent: 'query', label: 'Search', style: 'ghost', icon: 'search' },
-          ],
-          suggestions: [
-            'Show me all active agreements',
-            'Create a new employment agreement',
-            'Who are the entities in this realm?',
-          ],
+          affordances: ensureAffordancesArray(welcomeAffordances),
+          suggestions: buildSuggestionsFromAffordances(welcomeAffordances, 3),
           meta: {
             timestamp: Date.now() as Timestamp,
-            processingMs: Date.now() - startTime,
-            turn: 0,
+            processingMs: Math.max(0, Date.now() - startTime),
+            turn: 1, // ⚠️ turn >= 1 (welcome is turn 1)
+            kind: 'informational', // Fase 6: Welcome is informational
           },
         };
         
@@ -257,21 +273,38 @@ What would you like to do?`,
         // Use defaults
       }
       
+      // ⚠️ CONTRACT: Ensure invariants
+      const safeMarkdown = ensureNonEmptyMarkdown(llmResponse.content);
+      const safeAffordances = ensureAffordancesArray(affordances);
+      const suggestions = buildSuggestionsFromAffordances(safeAffordances, 3);
+      const currentTurn = Math.max(1, session.history.length + 1); // ⚠️ turn >= 1
+      const processingMs = Math.max(0, Date.now() - startTime); // ⚠️ processingMs >= 0
+      
+      // Fase 6: Determine message kind (default to informational for normal responses)
+      const messageKind: AgentMessageKind = 'informational';
+      
+      // Fase 6: Add affordance explanation if available
+      let finalMarkdown = safeMarkdown;
+      if (safeAffordances.length > 0 && safeMarkdown.length < 500) {
+        // Only add if message is short (to avoid clutter)
+        const { buildAffordanceExplanation } = await import('../../core/agent/messages/operatorMessages');
+        const affordanceText = buildAffordanceExplanation(safeAffordances);
+        finalMarkdown = `${safeMarkdown}\n\n${affordanceText}`;
+      }
+      
       const response: AgentResponse = {
         id: generateId('resp'),
         content: {
           type: 'message',
-          markdown: llmResponse.content,
+          markdown: finalMarkdown,
         },
-        affordances,
-        suggestions: [
-          'Tell me more',
-          'What else can I do?',
-        ],
+        affordances: safeAffordances,
+        suggestions: suggestions.length > 0 ? suggestions : undefined,
         meta: {
           timestamp: Date.now() as Timestamp,
-          processingMs: Date.now() - startTime,
-          turn: session.history.length + 1,
+          processingMs,
+          turn: currentTurn,
+          kind: messageKind, // Fase 6: Set message kind
           interpretation: {
             intent: 'chat',
             confidence: 0.8,

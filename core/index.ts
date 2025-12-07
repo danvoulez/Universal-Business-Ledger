@@ -18,6 +18,79 @@
  */
 
 // ============================================================================
+// CONFIGURATION - Centralized and validated
+// ============================================================================
+
+export {
+  getConfig,
+  getConfigValue,
+  hasConfig,
+  requireConfig,
+  clearConfigCache,
+  type Config,
+} from './config';
+
+// ============================================================================
+// DATABASE - Modular and LLM-friendly
+// ============================================================================
+
+export {
+  getDBConnection,
+  createDBConnection,
+  validateConnectionString,
+  closeAllConnections,
+  type DBConnection,
+  type DBConnectionConfig,
+} from './db/connection';
+
+export {
+  runMigrations,
+  applyFullSchema,
+  getAppliedMigrations,
+  markMigrationApplied,
+  ensureMigrationsTable,
+  type Migration,
+  MIGRATIONS,
+} from './db/migrations';
+
+export {
+  validateSchema,
+  validateMigrations,
+  validateDatabaseEmpty,
+  type SchemaValidationResult,
+  type TableInfo,
+  type ColumnInfo,
+} from './db/validators';
+
+export {
+  dbError,
+  extractPostgresError,
+  DB_ERROR_CODES,
+  type DBErrorContext,
+  type DBErrorInfo,
+} from './db/errors';
+
+// ============================================================================
+// API - Errors and validators
+// ============================================================================
+
+export {
+  apiError,
+  APIError,
+  API_ERROR_CODES,
+  type APIErrorContext,
+  type APIErrorInfo,
+} from './api/errors';
+
+export {
+  validateIntentRequest,
+  validateIntent,
+  validateApiKey,
+  validateRealmId,
+  validateEntityId,
+} from './api/validators';
+
+// ============================================================================
 // SHARED PRIMITIVES - The foundation everything builds upon
 // ============================================================================
 
@@ -1022,3 +1095,10 @@ export function createUniversalLedger(
 
 // Legacy alias
 export const createTemporalLedger = createUniversalLedger;
+
+// ============================================================================
+// OBSERVABILITY - Structured Logging (Fase 4)
+// ============================================================================
+
+export { logger, generateTraceId, extractTraceId } from './observability/logger';
+export type { Logger, LogContext, LogLevel } from './observability/logger';
