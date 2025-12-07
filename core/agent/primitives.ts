@@ -1,4 +1,9 @@
 /**
+ * FASE 10 - CÓDIGO PEDAGÓGICO
+ * 
+ * Este módulo funciona como exemplo vivo para humanos + IAs.
+ * Não remover "redundâncias" aqui sem substituir por algo igualmente didático.
+ * 
  * AGENT PRIMITIVES - Canonical Types
  * 
  * ⚠️ CANONICAL SOURCE: This is the ONLY place where AgentResponse, ChatResponse,
@@ -10,6 +15,10 @@
  * - AgentMessageKind: tipos de resposta operacionais
  * - Mensagens de incidente, guidance, diagnóstico
  * - Sugestões operacionais concretas
+ * 
+ * Helpers "óbvios" aqui servem como âncoras semânticas:
+ * - IAs podem buscar por nome da função e encontrar o ponto central
+ * - Devs novatos encontram exemplos de uso imediatamente
  * 
  * @see docs/CONTRATO-API-UBL.md for the complete API contract.
  */

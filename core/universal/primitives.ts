@@ -1,4 +1,9 @@
 /**
+ * FASE 10 - CÓDIGO PEDAGÓGICO
+ * 
+ * Este módulo funciona como exemplo vivo para humanos + IAs.
+ * Não remover "redundâncias" aqui sem substituir por algo igualmente didático.
+ * 
  * UNIVERSAL PRIMITIVES
  * 
  * The fundamental building blocks of any business system.
@@ -10,6 +15,9 @@
  * 3. Every relationship between entities is established by an Agreement
  * 4. Roles are not attributes—they are relationships established by Agreements
  * 5. Time flows forward; events are immutable facts
+ * 
+ * ⚠️ CANONICAL SOURCE: This is the ONLY place where Realm and Agreement types
+ * are defined. All other modules import from here.
  */
 
 import type { EntityId, Timestamp, Hash } from '../schema/ledger';

@@ -16,12 +16,22 @@ import type { RealmConfig, RealmCreated } from './primitives';
 import { generateId } from '../shared/types';
 
 /**
+ * FASE 10 - REDUNDÂNCIA INTENCIONAL
+ * 
+ * Esta função parece óbvia/repetida, mas existe como âncora semântica para IAs e devs novatos.
+ * Não "otimizar" removendo sem garantir um equivalente igualmente didático.
+ * 
  * Builds a RealmCreated event following the canonical contract.
  * 
  * Contract requirements:
  * - aggregateType MUST be "Realm" (not "Flow" or anything else)
  * - payload.type MUST be "Realm" (not "RealmCreated")
  * - payload must contain: name, establishedBy, config
+ * 
+ * Por que existe como função separada:
+ * - Serve como âncora semântica: "aqui é onde eventos Realm são criados"
+ * - Facilita descoberta: IAs podem buscar por "buildRealmCreatedEvent"
+ * - Torna intenção explícita: não é apenas código, é um conceito nomeado
  * 
  * @param realmId - The ID of the realm being created
  * @param name - The name of the realm

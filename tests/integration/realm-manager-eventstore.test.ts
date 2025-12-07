@@ -1,4 +1,9 @@
 /**
+ * FASE 10 - TESTE COMO DOCUMENTAÇÃO
+ * 
+ * Este arquivo também funciona como "guia de uso" para humanos + IAs.
+ * Ao alterar, preserve a clareza dos cenários e dados de exemplo.
+ * 
  * REALM MANAGER EVENT-STORE TESTS
  * 
  * Fase 5: REALM MANAGER 100% EVENT-STORE
@@ -8,6 +13,9 @@
  * - Primordial Realm is always from event store
  * - No Realm exists without RealmCreated event
  * - Cache is derived, not source of truth
+ * 
+ * Este teste serve como roteiro de como reconstruir Realms do event store.
+ * Demonstra o princípio central: event store é fonte única de verdade.
  */
 
 import { describe, it, before } from 'node:test';

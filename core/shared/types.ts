@@ -280,6 +280,16 @@ export const Ids = {
 // ============================================================================
 // PRIMORDIAL CONSTANTS
 // ============================================================================
+// FASE 10 - REDUNDÂNCIA INTENCIONAL
+// 
+// Esta re-exportação parece redundante, mas existe como âncora semântica para IAs e devs novatos.
+// Não "otimizar" removendo sem garantir que imports alternativos existem.
+// 
+// Por que é intencional:
+// - Facilita descoberta: IAs e devs podem importar de qualquer lugar comum
+// - Reduz necessidade de navegar a árvore de imports
+// - Serve como âncora semântica: "onde quer que eu procure, encontro"
+//
 // NOTE: These constants are re-exported from core/universal/primitives.ts
 // which is the CANONICAL source. This re-export is for backward compatibility.
 // New code should import directly from '../universal/primitives'.

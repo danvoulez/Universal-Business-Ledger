@@ -1,4 +1,9 @@
 /**
+ * FASE 10 - TESTE COMO DOCUMENTAÇÃO
+ * 
+ * Este arquivo também funciona como "guia de uso" para humanos + IAs.
+ * Ao alterar, preserve a clareza dos cenários e dados de exemplo.
+ * 
  * INTEGRATION TESTS - Chat API
  * 
  * Tests the complete flow:
@@ -8,6 +13,9 @@
  * - Contract validation
  * 
  * Fase 3 - Agente Diamante
+ * 
+ * Este teste serve como roteiro de uso da API de chat.
+ * Cenários bem nomeados servem como índice para IAs e devs.
  */
 
 import { describe, it, before } from 'node:test';

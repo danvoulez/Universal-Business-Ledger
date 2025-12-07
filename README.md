@@ -281,6 +281,69 @@ npm run dev
 
 ---
 
+## 🎓 Se você é novo no UBL, comece por aqui
+
+### 1. Entender a Filosofia
+
+Leia `docs/REALM-CONTRACT.md` para entender:
+- O que são Realms
+- Como Agreements estabelecem Realms
+- Por que isolamento é importante
+
+### 2. Rodar o Pipeline
+
+```bash
+cd "/Users/voulezvous/new aws/ORGANIZAR"
+./cicd/pipeline-oficial.sh
+```
+
+Isso valida:
+- Ambiente configurado
+- Testes passando
+- Build funcionando
+
+### 3. Testar a API
+
+```bash
+# Health check
+curl -s http://localhost:3000/health | jq
+
+# Chat com o agente
+curl -s -X POST http://localhost:3000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": { "text": "Olá, me mostra do que você é capaz." },
+    "startSession": {
+      "realmId": "test-realm",
+      "actor": { "type": "System", "systemId": "test" }
+    }
+  }' | jq
+```
+
+### 4. Ler Documentação Operacional
+
+- `docs/OBSERVABILITY-UBL.md` - Como ler logs e métricas
+- `docs/GOVERNANCA-COMPUTAVEL-UBL.md` - Como governança funciona
+- `docs/BUSCA-E-CONSISTENCIA-EVENTUAL-UBL.md` - Como busca funciona
+
+### 5. Explorar Testes como Exemplos
+
+- `tests/integration/api-chat.test.ts` - Como usar a API de chat
+- `tests/integration/realm-contract-invariants.test.ts` - Como Realms funcionam
+- `tests/integration/search/indexing-eventual-consistency.test.ts` - Como busca funciona
+
+### Scripts Tutoriais
+
+Estes scripts no `cicd/` são bons tutores:
+
+- `validate.sh` - Valida ambiente e configuração
+- `testar-api-endpoints.sh` - Mostra como testar a API
+- `verificar-status-aws.sh` - Mostra como verificar infraestrutura
+
+📖 **Guia completo**: Veja `docs/CODIGO-PEDAGOGICO-HUMANO-IA.md` para entender a filosofia de co-manutenção humano-IA.
+
+---
+
 ## 🤝 Contributing
 
 This is a conceptual architecture ready for real-world implementation. Contributions welcome!

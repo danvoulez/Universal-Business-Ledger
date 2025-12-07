@@ -1,4 +1,9 @@
 /**
+ * FASE 10 - TESTE COMO DOCUMENTAÇÃO
+ * 
+ * Este arquivo também funciona como "guia de uso" para humanos + IAs.
+ * Ao alterar, preserve a clareza dos cenários e dados de exemplo.
+ * 
  * INTEGRATION TESTS - Realm Contract Invariants
  * 
  * Testa os invariantes definidos em docs/REALM-CONTRACT.md:
@@ -8,6 +13,9 @@
  * - establishedBy sempre aponta para Agreement válido
  * 
  * Fase 2 - REALM & AGREEMENTS inquebráveis
+ * 
+ * Este teste serve como roteiro de como Realms funcionam.
+ * Cada teste valida um invariante específico do contrato.
  */
 
 import { describe, it, before } from 'node:test';

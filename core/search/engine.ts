@@ -1,5 +1,12 @@
 /**
- * SEARCH - Full-Text & Semantic Search
+ * FASE 9 - BUSCA & CONSISTÊNCIA EVENTUAL DO DIAMANTE
+ * 
+ * Esta camada oferece busca textual e estruturada sobre o ledger,
+ * usando um índice externo e consistência eventual.
+ * Objetivos principais:
+ * - Deixar explícito o "lag" entre eventos e indexação.
+ * - Tornar a indexação segura, idempotente e observável.
+ * - Expor sinais claros para operadores e para o agente.
  * 
  * The query language handles structured queries. Search handles:
  * - Full-text search across documents and entities
@@ -111,6 +118,9 @@ export interface SearchResults {
   
   /** Query metadata */
   readonly meta: SearchMeta;
+  
+  /** FASE 9: Eventual consistency markers */
+  readonly consistency?: IndexConsistency;
 }
 
 export interface SearchHit {
@@ -167,7 +177,20 @@ export interface SearchMeta {
 // ============================================================================
 
 /**
+ * FASE 9: Index consistency marker
+ */
+export interface IndexConsistency {
+  realmId?: EntityId;
+  lastIndexedEventId: string | null;
+  lastEventStoreEventId: string | null;
+  indexLagEvents: number; // diferença entre os dois
+  lastIndexedAt?: Timestamp;
+}
+
+/**
  * Search engine interface.
+ * 
+ * FASE 9: Extended with eventual consistency support.
  */
 export interface SearchEngine {
   /** Perform a search */
@@ -193,6 +216,9 @@ export interface SearchEngine {
   
   /** Get index statistics */
   getStats(): Promise<IndexStats>;
+  
+  /** FASE 9: Get index consistency for a realm */
+  getIndexConsistency?(params: { realmId?: EntityId }): Promise<IndexConsistency>;
 }
 
 export interface SuggestOptions {
@@ -225,6 +251,17 @@ export interface IndexStats {
   readonly byType: Record<AggregateType, number>;
   readonly indexSize: number;
   readonly lastUpdated: Timestamp;
+}
+
+/**
+ * FASE 9: Index consistency marker
+ */
+export interface IndexConsistency {
+  realmId?: EntityId;
+  lastIndexedEventId: string | null;
+  lastEventStoreEventId: string | null;
+  indexLagEvents: number; // diferença entre os dois
+  lastIndexedAt?: Timestamp;
 }
 
 // ============================================================================
